@@ -972,15 +972,17 @@ function parseCSV(text) {
 }
 
 function Financials({ financials, setFinancials, bookings, isMobile }) {
-  const [filter, setFilter] = useState("All");
-  const [modal,  setModal]  = useState(false);
-  const [form,   setForm]   = useState(emptyEntry());
-  const importRef = useRef(null);
-  const importBookRef = useRef(null);
+  const [tab,    setTab]   = useState("Income");  // "Income" | "Expense"
+  const [modal,  setModal] = useState(false);
+  const [form,   setForm]  = useState(emptyEntry());
+  const importIncRef  = useRef(null);
+  const importExpRef  = useRef(null);
 
-  const filtered = financials.filter(f=>filter==="All"||f.type===filter).sort((a,b)=>new Date(b.date)-new Date(a.date));
-  const totalIncome  = financials.filter(f=>f.type==="Income" ).reduce((s,f)=>s+f.amount,0);
-  const totalExpense = financials.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
+  const incomeList  = financials.filter(f=>f.type==="Income" ).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const expenseList = financials.filter(f=>f.type==="Expense").sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const totalIncome  = incomeList.reduce((s,f)=>s+f.amount,0);
+  const totalExpense = expenseList.reduce((s,f)=>s+f.amount,0);
+  const activeList   = tab==="Income" ? incomeList : expenseList;
 
   function save() {
     if(!form.amount||!form.description) return alert("Amount and description are required.");
@@ -989,122 +991,199 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
   }
   function remove(id) { if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }
 
-  // Reset & rebuild from bookings
   function resetFromBookings() {
-    if(!window.confirm("This will clear ALL financial entries and rebuild income from completed bookings only. Expenses will be lost. Continue?")) return;
-    const newFin = bookings.filter(b=>b.status==="Completed").map(b=>({
-      id: uid(),
-      date: new Date(b.datetime).toISOString().slice(0,10),
-      type: "Income",
-      category: "Service Revenue",
-      bookingId: b.id,
-      amount: +b.price||0,
-      description: `${b.service} – ${b.client}${b.venue?" @ "+b.venue:""}`,
-      method: "Cash",
+    if(!window.confirm("This will rebuild income from Completed bookings. Existing income entries will be replaced. Expenses are kept. Continue?")) return;
+    const newIncome = bookings.filter(b=>b.status==="Completed").map(b=>({
+      id:uid(), date:new Date(b.datetime).toISOString().slice(0,10),
+      type:"Income", category:"Service Revenue", bookingId:b.id,
+      amount:+b.price||0,
+      description:`${b.service} – ${b.client}${b.venue?" @ "+b.venue:""}`,
+      method:"Cash",
     }));
-    setFinancials(newFin);
+    setFinancials(prev=>[...prev.filter(f=>f.type==="Expense"), ...newIncome]);
   }
 
-  // Export financials
-  function exportFinancials() {
-    exportToCSV(filtered, "financials.csv",
-      ["id","date","type","category","description","amount","method","bookingId"],
-      f=>[f.id,f.date,f.type,f.category,`"${f.description}"`,f.amount,f.method,f.bookingId||""].join(",")
-    );
+  // ── Excel helpers ──────────────────────────────────────────────────────────
+  function exportIncomeExcel() {
+    exportToExcel([{
+      name:"Income",
+      data: incomeList.map(f=>({
+        "Date":f.date, "Category":f.category, "Description":f.description,
+        "Amount":f.amount, "Method":f.method,
+        "Linked Booking":f.bookingId||"",
+      }))
+    },{
+      name:"Summary",
+      data:[
+        {"":"Total Income","Value":totalIncome},
+        {"":"Total Entries","Value":incomeList.length},
+      ]
+    }], `BIM-Income-${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 
+  function exportExpenseExcel() {
+    exportToExcel([{
+      name:"Expenses",
+      data: expenseList.map(f=>({
+        "Date":f.date, "Category":f.category, "Description":f.description,
+        "Amount":f.amount, "Method":f.method,
+        "Linked Booking":f.bookingId||"",
+      }))
+    },{
+      name:"Summary",
+      data:[
+        {"":"Total Expenses","Value":totalExpense},
+        {"":"Total Entries","Value":expenseList.length},
+      ]
+    }], `BIM-Expenses-${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
 
-  // Import financials CSV
-  function handleImportFin(e) {
+  function handleImportIncome(e) {
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = ev => {
       try {
-        const rows = parseCSV(ev.target.result);
-        const imported = rows.filter(r=>r.date&&r.type&&r.amount).map(r=>({
-          id: r.id||uid(), date:r.date, type:r.type, category:r.category||"Other",
-          description:r.description||"", amount:+r.amount||0, method:r.method||"Cash", bookingId:r.bookingId||null
+        const wb = XLSX.read(ev.target.result,{type:"binary"});
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        const imported = rows.filter(r=>r["Amount"]&&r["Description"]).map(r=>({
+          id:uid(), date:r["Date"]||new Date().toISOString().slice(0,10),
+          type:"Income", category:r["Category"]||"Service Revenue",
+          description:String(r["Description"]), amount:+r["Amount"]||0,
+          method:r["Method"]||"Cash", bookingId:r["Linked Booking"]||null,
         }));
         if(!imported.length) return alert("No valid rows found.");
-        if(window.confirm(`Import ${imported.length} entries? This will REPLACE existing data.`)) setFinancials(imported);
-      } catch { alert("Failed to parse CSV."); }
+        if(window.confirm(`Import ${imported.length} income entries? Existing income will be replaced.`))
+          setFinancials(prev=>[...prev.filter(f=>f.type==="Expense"),...imported]);
+      } catch { alert("Failed to read file."); }
     };
-    reader.readAsText(file);
+    reader.readAsBinaryString(file);
     e.target.value="";
   }
 
-  return (
-    <div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:10}}>
-        <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          <Btn variant="amber" size="sm" onClick={()=>{setForm(emptyEntry());setModal(true);}}>+ Add Entry</Btn>
-          <Btn variant="outline" size="sm" onClick={exportFinancials}>⬇ Export CSV</Btn>
-          <Btn variant="outline" size="sm" onClick={()=>importRef.current.click()}>⬆ Import CSV</Btn>
-          <input ref={importRef} type="file" accept=".csv" style={{display:"none"}} onChange={handleImportFin} />
-          <Btn variant="danger" size="sm" onClick={resetFromBookings}>↺ Reset from Bookings</Btn>
+  function handleImportExpense(e) {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result,{type:"binary"});
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        const imported = rows.filter(r=>r["Amount"]&&r["Description"]).map(r=>({
+          id:uid(), date:r["Date"]||new Date().toISOString().slice(0,10),
+          type:"Expense", category:r["Category"]||"Other",
+          description:String(r["Description"]), amount:+r["Amount"]||0,
+          method:r["Method"]||"Cash", bookingId:r["Linked Booking"]||null,
+        }));
+        if(!imported.length) return alert("No valid rows found.");
+        if(window.confirm(`Import ${imported.length} expense entries? Existing expenses will be replaced.`))
+          setFinancials(prev=>[...prev.filter(f=>f.type==="Income"),...imported]);
+      } catch { alert("Failed to read file."); }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value="";
+  }
+
+  const EntryCard = ({f}) => {
+    const linked = f.bookingId?bookings.find(b=>b.id===f.bookingId):null;
+    const isIncome = f.type==="Income";
+    return (
+      <Card style={{padding:"12px 14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:3,wordBreak:"break-word",color:C.text}}>{f.description}</div>
+            <div style={{fontSize:11,color:C.muted}}>{f.date} · {f.category} · {f.method}</div>
+            {linked&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>📎 {linked.client}</div>}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
+            <div style={{fontWeight:800,fontSize:15,fontVariantNumeric:"tabular-nums",color:isIncome?C.green:C.red}}>
+              {isIncome?"":"-"}{currency(f.amount)}
+            </div>
+            <Btn variant="danger" size="sm" onClick={()=>remove(f.id)}>× Delete</Btn>
+          </div>
         </div>
+      </Card>
+    );
+  };
+
+  return (
+    <div style={{paddingBottom:isMobile?16:0}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10}}>
+        <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
+        <Btn variant="danger" size="sm" onClick={resetFromBookings}>↺ Rebuild Income</Btn>
       </div>
 
-      {/* Summary bar */}
-      <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(3,1fr)",gap:12,marginBottom:20}}>
-        <Card style={{padding:"14px 18px",borderLeft:`4px solid ${C.green}`}}>
-          <div style={{fontSize:11,color:C.muted,fontWeight:600,textTransform:"uppercase"}}>Total Income</div>
-          <div style={{fontSize:20,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(totalIncome)}</div>
+      {/* Summary cards */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:20}}>
+        <Card style={{padding:"12px 14px",borderLeft:`4px solid ${C.green}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",marginBottom:4}}>Income</div>
+          <div style={{fontSize:isMobile?16:20,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(totalIncome)}</div>
         </Card>
-        <Card style={{padding:"14px 18px",borderLeft:`4px solid ${C.red}`}}>
-          <div style={{fontSize:11,color:C.muted,fontWeight:600,textTransform:"uppercase"}}>Total Expenses</div>
-          <div style={{fontSize:20,fontWeight:800,color:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(totalExpense)}</div>
+        <Card style={{padding:"12px 14px",borderLeft:`4px solid ${C.red}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",marginBottom:4}}>Expenses</div>
+          <div style={{fontSize:isMobile?16:20,fontWeight:800,color:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(totalExpense)}</div>
         </Card>
-        <Card style={{padding:"14px 18px",borderLeft:`4px solid ${(totalIncome-totalExpense)>=0?C.green:C.red}`,gridColumn:isMobile?"span 2":"auto"}}>
-          <div style={{fontSize:11,color:C.muted,fontWeight:600,textTransform:"uppercase"}}>Net</div>
-          <div style={{fontSize:20,fontWeight:800,color:(totalIncome-totalExpense)>=0?C.green:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(totalIncome-totalExpense)}</div>
+        <Card style={{padding:"12px 14px",borderLeft:`4px solid ${(totalIncome-totalExpense)>=0?C.green:C.red}`}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",marginBottom:4}}>Net</div>
+          <div style={{fontSize:isMobile?16:20,fontWeight:800,color:(totalIncome-totalExpense)>=0?C.green:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(totalIncome-totalExpense)}</div>
         </Card>
       </div>
 
-      <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
-        {["All","Income","Expense"].map(t=>(
-          <Btn key={t} variant={filter===t?"primary":"outline"} size="sm" onClick={()=>setFilter(t)}>{t}</Btn>
+      {/* Tab switcher */}
+      <div style={{display:"flex",borderBottom:`2px solid ${C.border}`,marginBottom:16}}>
+        {["Income","Expense"].map(t=>(
+          <div key={t} onClick={()=>setTab(t)}
+            style={{padding:"10px 20px",cursor:"pointer",fontWeight:700,fontSize:14,
+              color:tab===t?(t==="Income"?C.green:C.red):C.muted,
+              borderBottom:tab===t?`2px solid ${t==="Income"?C.green:C.red}`:"2px solid transparent",
+              marginBottom:-2}}>
+            {t==="Income"?"💰 Income":"💸 Expense"}
+            <span style={{marginLeft:6,fontSize:12,fontWeight:400,color:C.muted}}>({t==="Income"?incomeList.length:expenseList.length})</span>
+          </div>
         ))}
-        <span style={{marginLeft:"auto",fontSize:13,color:C.muted,alignSelf:"center"}}>{filtered.length} entries</span>
       </div>
 
+      {/* Tab toolbar */}
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        <Btn variant={tab==="Income"?"success":"danger"} size="sm"
+          onClick={()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); }}>
+          + Add {tab}
+        </Btn>
+        {tab==="Income" ? (<>
+          <Btn variant="outline" size="sm" onClick={exportIncomeExcel}>⬇ Export Excel</Btn>
+          <Btn variant="outline" size="sm" onClick={()=>importIncRef.current.click()}>⬆ Import Excel</Btn>
+          <input ref={importIncRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={handleImportIncome} />
+        </>) : (<>
+          <Btn variant="outline" size="sm" onClick={exportExpenseExcel}>⬇ Export Excel</Btn>
+          <Btn variant="outline" size="sm" onClick={()=>importExpRef.current.click()}>⬆ Import Excel</Btn>
+          <input ref={importExpRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={handleImportExpense} />
+        </>)}
+        <span style={{marginLeft:"auto",fontSize:12,color:C.muted,alignSelf:"center"}}>{activeList.length} entries</span>
+      </div>
+
+      {/* Entry list */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        {filtered.length===0&&<div style={{textAlign:"center",color:C.muted,padding:32}}>No entries found.</div>}
-        {filtered.map(f=>{
-          const linked = f.bookingId?bookings.find(b=>b.id===f.bookingId):null;
-          return (
-            <Card key={f.id} style={{padding:"12px 16px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:600,fontSize:13,marginBottom:2,wordBreak:"break-word"}}>{f.description}</div>
-                  <div style={{fontSize:11,color:C.muted}}>{f.date} · {f.category} · {f.method}</div>
-                  {linked&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>📎 {linked.client}</div>}
-                </div>
-                <div style={{textAlign:"right",flexShrink:0,display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
-                  <div style={{fontWeight:700,fontSize:15,fontVariantNumeric:"tabular-nums",color:f.type==="Income"?C.green:C.red}}>
-                    {f.type==="Expense"?"-":""}{currency(f.amount)}
-                  </div>
-                  <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                    <Badge label={f.type} color={f.type==="Income"?C.green:C.red} />
-                    <Btn variant="danger" size="sm" onClick={()=>remove(f.id)}>×</Btn>
-                  </div>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
+        {activeList.length===0 && (
+          <Card style={{textAlign:"center",padding:40,color:C.muted}}>
+            <div style={{fontSize:32,marginBottom:8}}>{tab==="Income"?"💰":"💸"}</div>
+            <div style={{fontWeight:600,marginBottom:4}}>No {tab.toLowerCase()} entries yet</div>
+            <div style={{fontSize:13}}>Click "+ Add {tab}" to get started</div>
+          </Card>
+        )}
+        {activeList.map(f=><EntryCard key={f.id} f={f} />)}
       </div>
 
+      {/* Add/Edit modal */}
       {modal&&(
-        <Modal title="Add Financial Entry" onClose={()=>setModal(false)}>
+        <Modal title={`Add ${form.type} Entry`} onClose={()=>setModal(false)}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
             <Input label="Date" type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} />
-            <Select label="Type" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option>Income</option><option>Expense</option></Select>
+            <Select label="Type" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>
+              <option>Income</option><option>Expense</option>
+            </Select>
             <Select label="Category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>
               {CATEGORIES.map(c=><option key={c}>{c}</option>)}
             </Select>
-            <Select label="Payment Method" value={form.method} onChange={e=>setForm({...form,method:e.target.value})}>
+            <Select label="Method" value={form.method} onChange={e=>setForm({...form,method:e.target.value})}>
               {["Cash","Bank Transfer","GCash","Maya","Card"].map(m=><option key={m}>{m}</option>)}
             </Select>
             <Input label="Amount (₱)" type="number" value={form.amount} onChange={e=>setForm({...form,amount:e.target.value})} style={{gridColumn:"span 2"}} />
