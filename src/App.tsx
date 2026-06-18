@@ -125,53 +125,9 @@ function excelToISO(serial) {
   return new Date(utcDays * 86400 * 1000).toISOString().slice(0,10);
 }
 
-const SEED_BOOKINGS = [
-  { id:"BIM-001", client:"Carmen Violeta",    phone:"09175108151", service:"Mini Figure Experience",     staff:"s1", datetime:excelToISO(46176)+"T10:00", duration:240, status:"Completed",        notes:"Corporate event at Marriott Manila, Pasay", price:16000,  venue:"Marriott Manila, Pasay",       eventType:"Corporate",   pax:100, theme:"",                    paymentStatus:"Paid",            balance:0 },
-  { id:"BIM-002", client:"Bea Favorada Comia",phone:"",           service:"Mini Figure Experience",     staff:"s1", datetime:excelToISO(46180)+"T12:30", duration:240, status:"Completed",        notes:"Madagascar theme. 1hr to 30mins ingress time", price:8100, venue:"McDonalds Dian, Makati",       eventType:"Birthday",    pax:50,  theme:"Madagascar",          paymentStatus:"Paid",            balance:0 },
-  { id:"BIM-003", client:"Roen Carlo Tejero", phone:"09178065497", service:"Mini Figure Experience",    staff:"",   datetime:excelToISO(46277)+"T15:00", duration:240, status:"Reserved",         notes:"Follow up on theme and time. Still finalizing if Roblox or Skibidi", price:12900, venue:"JGAL Heights, Pasig", eventType:"Birthday",    pax:100, theme:"TBD",                 paymentStatus:"Pending Balance", balance:9030 },
-  { id:"BIM-004", client:"Kim Villa-Abrille", phone:"09188975016", service:"Mini Figure Experience",    staff:"",   datetime:excelToISO(46186)+"T11:00", duration:240, status:"Reserved",         notes:"Follow up permits", price:12800, venue:"Kinetix Kids, Podium",    eventType:"Birthday",    pax:100, theme:"TBD",                 paymentStatus:"Pending Balance", balance:8960 },
-  { id:"BIM-005", client:"Geisha Baraoidan",  phone:"",           service:"Mini Figure Experience",     staff:"",   datetime:excelToISO(46200)+"T17:00", duration:240, status:"Reserved",         notes:"Follow up gform and theme", price:10300, venue:"Podium",              eventType:"Baptism",     pax:75,  theme:"",                    paymentStatus:"Pending Balance", balance:7210 },
-  { id:"BIM-006", client:"Jessica Anne Sibal-Valdez", phone:"09277383314", service:"Mini Figure Experience", staff:"s1", datetime:excelToISO(46179)+"T16:00", duration:240, status:"Completed", notes:"Approved backing card", price:17800, venue:"Acero Hall, Marine Barracks, Taguig", eventType:"Baptism", pax:100, theme:"Done", paymentStatus:"Paid", balance:0 },
-  { id:"BIM-007", client:"Queenie Santiago-Villadore", phone:"09156191654", service:"Full Experience",  staff:"s1", datetime:excelToISO(46183)+"T12:00", duration:240, status:"Completed",        notes:"Fairy theme", price:14500, venue:"Wondellea Cafe & Resort, Silang Cavite", eventType:"Birthday", pax:50, theme:"Fairy", paymentStatus:"Paid", balance:0 },
-  { id:"BIM-008", client:"Nikki Ra",          phone:"09685443361", service:"Mini Figure Experience",    staff:"",   datetime:excelToISO(46187)+"T17:00", duration:240, status:"Reserved",         notes:"Follow up theme and gform", price:7000, venue:"Never Strangers, QC",  eventType:"Birthday",    pax:50,  theme:"",                    paymentStatus:"Pending Balance", balance:4900 },
-  { id:"BIM-009", client:"Tita Febs",         phone:"",           service:"Mini Figure Experience",     staff:"",   datetime:excelToISO(46186)+"T00:00", duration:240, status:"Completed",        notes:"Church event QC", price:9500, venue:"Quezon City",              eventType:"Church Event", pax:50, theme:"",                   paymentStatus:"Paid",            balance:0 },
-  { id:"BIM-010", client:"Mary Domingo",      phone:"",           service:"Mini Figure Experience",     staff:"",   datetime:excelToISO(46207)+"T00:00", duration:240, status:"Reserved",         notes:"", price:8000, venue:"Kapitan Moy, Marikina",               eventType:"Wedding",     pax:50,  theme:"",                    paymentStatus:"Pending Balance", balance:6000 },
-  { id:"BIM-011", client:"Chesca Cortes",     phone:"09171821025", service:"Mini Figure Experience",   staff:"",   datetime:excelToISO(46185)+"T00:00", duration:240, status:"Reserved",         notes:"Follow up permit. Hungry shark theme", price:7000, venue:"Kidventure, Estancia Mall, Pasig", eventType:"Birthday", pax:50, theme:"Hungry Shark", paymentStatus:"Pending Balance", balance:4900 },
-  { id:"BIM-012", client:"Hejo & Aya",        phone:"",           service:"Mini Figure Experience",     staff:"s1", datetime:excelToISO(46158)+"T10:00", duration:240, status:"Completed",        notes:"", price:9000, venue:"Max's, Quezon City",             eventType:"Baptism",     pax:75,  theme:"",                    paymentStatus:"Paid",            balance:0 },
-  { id:"BIM-013", client:"Matthew Jason R. Abelardo & Jessica Patricia Mae V. Paulino", phone:"09178577774", service:"Full Experience", staff:"", datetime:excelToISO(46302)+"T15:00", duration:240, status:"Reserved", notes:"To follow up invite", price:39000, venue:"Gia's Farm Events, Urdaneta Pangasinan", eventType:"Wedding", pax:150, theme:"", paymentStatus:"Pending Balance", balance:27300 },
-  { id:"BIM-014", client:"Ceej Villar Silva", phone:"",           service:"Mini Figure Experience",     staff:"",   datetime:excelToISO(46417)+"T00:00", duration:240, status:"Inquiry",          notes:"Pencil booked", price:12000, venue:"Mount Malarayat Golf and Country Club, Lipa Batangas", eventType:"Wedding", pax:100, theme:"", paymentStatus:"Pending Reservation", balance:12000 },
-  { id:"BIM-015", client:"Ranaea Bautista",   phone:"09651556450", service:"Full Experience",          staff:"",   datetime:excelToISO(46395)+"T16:30", duration:240, status:"Reserved",         notes:"To follow up invitation by ber months", price:33500, venue:"Bella Rosa Gardens, Silang Cavite", eventType:"Wedding", pax:150, theme:"", paymentStatus:"Pending Balance", balance:23450 },
-  { id:"BIM-016", client:"Lyra Dela Cruz",    phone:"09913827622", service:"Mini Figure Experience",   staff:"",   datetime:excelToISO(46236)+"T10:00", duration:240, status:"Reserved",         notes:"Capybara theme", price:8500, venue:"Activefun, BGC",               eventType:"Birthday",    pax:50,  theme:"Capybara",            paymentStatus:"Pending Balance", balance:5950 },
-  { id:"BIM-017", client:"Bea Carsula",       phone:"09608286252", service:"Mini Figure Experience",   staff:"",   datetime:excelToISO(46304)+"T11:30", duration:240, status:"Reserved",         notes:"Celebrant name: Kai. F1/Racing Cars theme", price:8700, venue:"Niu, Podium",   eventType:"Birthday",    pax:50,  theme:"F1/Racing Cars",      paymentStatus:"Pending Balance", balance:6090 },
-  { id:"BIM-018", client:"Janniah Ruby Tacuboy", phone:"09176559880", service:"Mini Figure Experience", staff:"",  datetime:excelToISO(46201)+"T11:00", duration:240, status:"Reserved",         notes:"Celebrant: Noah Tacuboy. Noah's Arc theme", price:9000, venue:"Club United, Paranaque", eventType:"Baptism", pax:50, theme:"Noah's Arc", paymentStatus:"Pending Balance", balance:6300 },
-  { id:"BIM-019", client:"Gandirah Mae Gonzales", phone:"09057683979", service:"Full Experience",      staff:"",   datetime:excelToISO(46193)+"T17:00", duration:240, status:"Reserved",         notes:"Celebrant: Makaio Alon Mendoza. Fun to be 1 theme", price:16500, venue:"Talisay Garden Cafe, Maginhawa QC", eventType:"Birthday", pax:75, theme:"Fun to be 1", paymentStatus:"Pending Balance", balance:12900 },
-];
+const SEED_BOOKINGS = [];
 
-const SEED_FINANCIALS = [
-  { id:"f1",  date:"2026-05-16", type:"Income",  category:"Service Revenue", bookingId:"BIM-012", amount:9000,  description:"Hejo & Aya – Baptism @ Max's QC",                              method:"Cash" },
-  { id:"f2",  date:"2026-06-03", type:"Income",  category:"Service Revenue", bookingId:"BIM-001", amount:16000, description:"Carmen Violeta – Corporate @ Marriott Manila",                  method:"Transfer" },
-  { id:"f3",  date:"2026-06-06", type:"Income",  category:"Service Revenue", bookingId:"BIM-006", amount:17800, description:"Jessica Anne Sibal-Valdez – Baptism @ Acero Hall Taguig",      method:"Transfer" },
-  { id:"f4",  date:"2026-06-07", type:"Income",  category:"Service Revenue", bookingId:"BIM-002", amount:8100,  description:"Bea Favorada Comia – Birthday @ McDonalds Dian Makati",        method:"Cash" },
-  { id:"f5",  date:"2026-06-10", type:"Income",  category:"Service Revenue", bookingId:"BIM-007", amount:14500, description:"Queenie Santiago-Villadore – Birthday @ Wondellea Silang",     method:"Transfer" },
-  { id:"f6",  date:"2026-06-13", type:"Income",  category:"Service Revenue", bookingId:"BIM-009", amount:9500,  description:"Tita Febs – Church Event @ Quezon City",                       method:"Cash" },
-  { id:"f7",  date:"2026-05-16", type:"Expense", category:"Staff Salary",    bookingId:"BIM-012", amount:600,   description:"Ate Lyn – Booth Staff 4hrs @ BIM-012",                        method:"Cash" },
-  { id:"f8",  date:"2026-05-16", type:"Expense", category:"Staff Salary",    bookingId:"BIM-012", amount:600,   description:"Vincent – Booth Staff 4hrs @ BIM-012",                        method:"Cash" },
-  { id:"f9",  date:"2026-06-03", type:"Expense", category:"Staff Salary",    bookingId:"BIM-001", amount:1200,  description:"Ate Lyn – Booth Staff 9hrs @ BIM-001 (Marriott)",              method:"Cash" },
-  { id:"f10", date:"2026-06-06", type:"Expense", category:"Staff Salary",    bookingId:"BIM-006", amount:700,   description:"Ate Lyn – Booth Staff 4hrs @ BIM-006 (Acero Hall)",            method:"Cash" },
-  { id:"f11", date:"2026-06-06", type:"Expense", category:"Staff Salary",    bookingId:"BIM-006", amount:600,   description:"Vincent – Booth Staff 4hrs @ BIM-006 (Acero Hall)",            method:"GCash" },
-  { id:"f12", date:"2026-06-06", type:"Expense", category:"Staff Salary",    bookingId:"BIM-006", amount:600,   description:"Intoy – Booth Staff 4hrs @ BIM-006 (Acero Hall)",              method:"Cash" },
-  { id:"f13", date:"2026-06-07", type:"Expense", category:"Staff Salary",    bookingId:"BIM-002", amount:700,   description:"Ate Lyn – Booth Staff 4hrs @ BIM-002 (McDonalds Dian)",       method:"Cash" },
-  { id:"f14", date:"2026-06-07", type:"Expense", category:"Staff Salary",    bookingId:"BIM-002", amount:600,   description:"Vincent – Booth Staff 4hrs @ BIM-002 (McDonalds Dian)",       method:"GCash" },
-  { id:"f15", date:"2026-06-07", type:"Expense", category:"Staff Salary",    bookingId:"BIM-002", amount:500,   description:"Kuya Nick – Other 4hrs @ BIM-002 (McDonalds Dian)",           method:"Cash" },
-  { id:"f16", date:"2026-06-10", type:"Expense", category:"Staff Salary",    bookingId:"BIM-007", amount:700,   description:"Ate Lyn – Booth Staff 4hrs @ BIM-007 (Wondellea)",            method:"GCash" },
-  { id:"f17", date:"2026-06-10", type:"Expense", category:"Staff Salary",    bookingId:"BIM-007", amount:600,   description:"Vincent – Booth Staff 4hrs @ BIM-007 (Wondellea)",            method:"Cash" },
-  { id:"f18", date:"2026-06-10", type:"Expense", category:"Staff Salary",    bookingId:null,      amount:250,   description:"Intoy – Other 4hrs",                                          method:"Cash" },
-  { id:"f19", date:"2026-06-06", type:"Expense", category:"Transportation",  bookingId:"BIM-006", amount:2000,  description:"Lalamove – Acero Hall Taguig (BIM-006)",                      method:"Cash" },
-  { id:"f20", date:"2026-06-07", type:"Expense", category:"Transportation",  bookingId:"BIM-002", amount:2000,  description:"Lalamove – McDonalds Dian Makati (BIM-002)",                  method:"Cash" },
-  { id:"f21", date:"2026-06-10", type:"Expense", category:"Transportation",  bookingId:"BIM-007", amount:3000,  description:"Out-of-town – Wondellea Silang Cavite (BIM-007)",             method:"Cash" },
-  { id:"f22", date:"2026-06-11", type:"Expense", category:"Registration",    bookingId:null,      amount:9000,  description:"BIR Registration",                                            method:"Bank Transfer" },
-  { id:"f23", date:"2026-06-11", type:"Expense", category:"Other",           bookingId:null,      amount:4000,  description:"Miscellaneous expense",                                       method:"Cash" },
-];
+const SEED_FINANCIALS = [];
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTHS_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -679,7 +635,6 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
   const [search, setSearch] = useState("");
   const [modal, setModal]   = useState(null);
   const [form,  setForm]    = useState(emptyBooking());
-  const [quickStatusId, setQuickStatusId] = useState(null);
 
   const bookingGate = usePasswordGate("bookings");
 
@@ -712,14 +667,46 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
     });
   }
 
-  function quickChangeStatus(id, newStatus) {
-    bookingGate.request(()=>{
-      setBookings(prev=>prev.map(b=>b.id===id?{...b,status:newStatus}:b));
-      setQuickStatusId(null);
-    });
-  }
 
   const staffName = (id) => staffList.find(s=>s.id===id)?.name||"—";
+
+  const importBookRef = useRef(null);
+
+  function importBookingsExcel(e) {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "binary" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws);
+        if(!rows.length) return alert("No data found in Excel file.");
+        const imported = rows.map(r => ({
+          id:            String(r["Booking ID"] || uid()),
+          client:        String(r["Client Name"] || ""),
+          phone:         String(r["Phone"] || ""),
+          service:       String(r["Package / Service"] || ""),
+          eventType:     String(r["Event Type"] || ""),
+          venue:         String(r["Venue"] || ""),
+          datetime:      r["Event Date"] ? (() => { try { const d = new Date(r["Event Date"] + (r["Event Time"] ? " " + r["Event Time"] : "")); return isNaN(d)?"":`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; } catch { return ""; }})() : "",
+          pax:           +r["No. of Pax"] || "",
+          theme:         String(r["Theme"] || ""),
+          staff:         "",
+          price:         +r["Package Price"] || 0,
+          balance:       +r["Balance"] || 0,
+          paymentStatus: String(r["Payment Status"] || "Pending Balance"),
+          status:        String(r["Booking Status"] || "Reserved"),
+          notes:         String(r["Notes"] || ""),
+          duration:      240,
+        }));
+        if(window.confirm(`Import ${imported.length} bookings? This will REPLACE all existing bookings.`)) {
+          setBookings(imported);
+        }
+      } catch(err) { alert("Failed to read Excel file. Make sure it matches the exported format."); }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = "";
+  }
 
   function exportBookingsExcel() {
     const data = bookings
@@ -770,6 +757,8 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           {bookingGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Edit unlocked</span>}
           <Btn variant="outline" size="sm" onClick={exportBookingsExcel}>⬇ Excel</Btn>
+          <Btn variant="outline" size="sm" onClick={()=>importBookRef.current.click()}>⬆ Import Excel</Btn>
+          <input ref={importBookRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={importBookingsExcel} />
           {!isMobile&&<Btn variant="amber" onClick={openNew}>+ New Booking</Btn>}
         </div>
       </div>
@@ -792,21 +781,11 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                 <div style={{flex:1,padding:"12px 14px"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                     <div style={{fontWeight:700,fontSize:14}}>{b.client}</div>
-                    {/* Quick status dropdown */}
-                    <div style={{position:"relative"}}>
-                      <div onClick={()=>bookingGate.request(()=>setQuickStatusId(quickStatusId===b.id?null:b.id))} style={{cursor:"pointer"}}>
-                        <Badge label={b.status} color={STATUS_COLOR[b.status]} />
-                      </div>
-                      {quickStatusId===b.id&&(
-                        <div style={{position:"absolute",left:0,top:"110%",background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,boxShadow:"0 8px 24px rgba(0,0,0,0.12)",zIndex:50,minWidth:140}}>
-                          {["Reserved","Inquiry","Completed","Cancelled"].map(s=>(
-                            <div key={s} onClick={()=>quickChangeStatus(b.id,s)} style={{padding:"9px 14px",cursor:"pointer",fontSize:13,fontWeight:b.status===s?700:400,color:b.status===s?STATUS_COLOR[s]:C.text,background:b.status===s?STATUS_COLOR[s]+"11":"transparent"}}>
-                              {s}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    <select value={b.status}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>setBookings(prev=>prev.map(x=>x.id===b.id?{...x,status:v}:x))); }}
+                      style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit",appearance:"auto"}}>
+                      {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
                   </div>
                   <div style={{fontSize:12,color:C.muted,marginTop:4}}>{b.service}</div>
                   <div style={{fontSize:12,color:C.muted,marginTop:4}}>📅 {b.datetime?new Date(b.datetime).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}):"—"}{b.venue&&` · 📍 ${b.venue}`}</div>
@@ -822,9 +801,10 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
               </div>
             </Card>
           ))}
-          <div style={{display:"flex",gap:8,marginTop:4}}>
-            <Btn variant="outline" style={{flex:1}} onClick={exportBookingsExcel}>⬇ Export Excel</Btn>
-            <Btn variant="amber" style={{flex:1}} onClick={openNew}>+ New Booking</Btn>
+          <div style={{display:"flex",gap:8,marginTop:4,flexWrap:"wrap"}}>
+            <Btn variant="outline" style={{flex:1}} onClick={exportBookingsExcel}>⬇ Export</Btn>
+            <Btn variant="outline" style={{flex:1}} onClick={()=>importBookRef.current.click()}>⬆ Import</Btn>
+            <Btn variant="amber" style={{width:"100%"}} onClick={openNew}>+ New Booking</Btn>
           </div>
         </div>
       ) : (
@@ -850,23 +830,12 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                   <td style={{padding:"12px 16px",color:C.muted,fontSize:12}}>{b.venue||"—"}</td>
                   <td style={{padding:"12px 16px",color:C.muted}}>{b.pax?b.pax+" pax":"—"}</td>
                   <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums"}}>{currency(b.price)}</td>
-                  <td style={{padding:"12px 16px",position:"relative"}}>
-                    {/* Inline status dropdown */}
-                    <div style={{position:"relative",display:"inline-block"}}>
-                      <div onClick={()=>bookingGate.request(()=>setQuickStatusId(quickStatusId===b.id?null:b.id))} style={{cursor:"pointer"}}>
-                        <Badge label={b.status} color={STATUS_COLOR[b.status]} />
-                        <span style={{fontSize:10,color:C.muted,marginLeft:4}}>▼</span>
-                      </div>
-                      {quickStatusId===b.id&&(
-                        <div style={{position:"absolute",left:0,top:"110%",background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,boxShadow:"0 8px 24px rgba(0,0,0,0.15)",zIndex:50,minWidth:150}}>
-                          {["Reserved","Inquiry","Completed","Cancelled"].map(s=>(
-                            <div key={s} onClick={()=>quickChangeStatus(b.id,s)} style={{padding:"9px 14px",cursor:"pointer",fontSize:13,fontWeight:b.status===s?700:400,color:b.status===s?STATUS_COLOR[s]:C.text,background:b.status===s?STATUS_COLOR[s]+"11":"transparent"}}>
-                              {s}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                  <td style={{padding:"12px 16px"}}>
+                    <select value={b.status}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>setBookings(prev=>prev.map(x=>x.id===b.id?{...x,status:v}:x))); }}
+                      style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit",appearance:"auto"}}>
+                      {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
                   </td>
                   <td style={{padding:"12px 16px"}}>
                     <div style={{display:"flex",gap:6}}>
@@ -1044,13 +1013,6 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
     );
   }
 
-  // Export bookings
-  function exportBookings() {
-    exportToCSV(bookings, "bookings.csv",
-      ["id","client","phone","service","venue","eventType","datetime","pax","theme","price","balance","paymentStatus","status","notes"],
-      b=>[b.id,`"${b.client}"`,b.phone||"",b.service,`"${b.venue||""}"`,b.eventType||"",b.datetime,b.pax||"",`"${b.theme||""}"`,b.price,b.balance||0,b.paymentStatus,b.status,`"${b.notes||""}"`].join(",")
-    );
-  }
 
   // Import financials CSV
   function handleImportFin(e) {
@@ -1078,7 +1040,6 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           <Btn variant="amber" size="sm" onClick={()=>{setForm(emptyEntry());setModal(true);}}>+ Add Entry</Btn>
           <Btn variant="outline" size="sm" onClick={exportFinancials}>⬇ Export CSV</Btn>
-          <Btn variant="outline" size="sm" onClick={exportBookings}>⬇ Bookings CSV</Btn>
           <Btn variant="outline" size="sm" onClick={()=>importRef.current.click()}>⬆ Import CSV</Btn>
           <input ref={importRef} type="file" accept=".csv" style={{display:"none"}} onChange={handleImportFin} />
           <Btn variant="danger" size="sm" onClick={resetFromBookings}>↺ Reset from Bookings</Btn>
