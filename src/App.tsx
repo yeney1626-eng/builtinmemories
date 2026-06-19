@@ -307,29 +307,49 @@ function Sidebar({ page, setPage, theme, setTheme }) {
 }
 
 function BottomNav({ page, setPage, theme, setTheme }) {
-  const [showTheme, setShowTheme] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const mainNav = [
+    { id:"dashboard",  icon:"◈",  label:"Dashboard" },
+    { id:"bookings",   icon:"📅", label:"Bookings" },
+    { id:"financials", icon:"💳", label:"Financials" },
+    { id:"staff",      icon:"👥", label:"Staff" },
+  ];
   return (
     <>
-      {showTheme&&(
-        <div style={{position:"fixed",bottom:58,left:0,right:0,zIndex:101,background:C.sidebarBg,display:"flex",justifyContent:"center",gap:10,padding:"12px 16px",borderTop:`1px solid rgba(255,255,255,0.1)`}}>
-          {Object.entries(THEMES).map(([key,t])=>(
-            <div key={key} onClick={()=>{setTheme(key);setShowTheme(false);}}
-              style={{padding:"8px 18px",borderRadius:20,cursor:"pointer",fontSize:13,fontWeight:theme===key?700:400,background:theme===key?C.amber:"rgba(255,255,255,0.08)",color:theme===key?"#fff":C.sidebarText,border:`1px solid ${theme===key?C.amber:"transparent"}`}}>
-              {t.icon} {t.name}
-            </div>
-          ))}
+      {showMore&&(
+        <div onClick={()=>setShowMore(false)} style={{position:"fixed",inset:0,zIndex:100}} />
+      )}
+      {showMore&&(
+        <div style={{position:"fixed",bottom:58,left:0,right:0,zIndex:101,background:C.sidebarBg,borderTop:`1px solid rgba(255,255,255,0.1)`,padding:"12px 16px"}}>
+          <div style={{display:"flex",gap:8,justifyContent:"center",marginBottom:12}}>
+            {Object.entries(THEMES).map(([key,t])=>(
+              <div key={key} onClick={()=>{setTheme(key);}}
+                style={{padding:"8px 16px",borderRadius:20,cursor:"pointer",fontSize:13,fontWeight:theme===key?700:400,background:theme===key?C.amber:"rgba(255,255,255,0.08)",color:theme===key?"#fff":C.sidebarText,border:`1px solid ${theme===key?C.amber:"transparent"}`}}>
+                {t.icon} {t.name}
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"center"}}>
+            {[{id:"packages",icon:"📦",label:"Packages"},{id:"settings",icon:"⚙",label:"Settings"}].map(n=>(
+              <div key={n.id} onClick={()=>{setPage(n.id);setShowMore(false);}}
+                style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"10px 8px",borderRadius:10,cursor:"pointer",background:page===n.id?C.amber+"22":"rgba(255,255,255,0.06)",color:page===n.id?C.amber:C.sidebarText}}>
+                <span style={{fontSize:22}}>{n.icon}</span>
+                <span style={{fontSize:11,fontWeight:600}}>{n.label}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
-      <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:100,background:C.sidebarBg,display:"flex",borderTop:`1px solid rgba(255,255,255,0.08)`,paddingBottom:"env(safe-area-inset-bottom)"}}>
-        {NAV.slice(0,4).map(n=>(
-          <div key={n.id} onClick={()=>setPage(n.id)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"8px 4px 6px",cursor:"pointer",color:page===n.id?C.amber:C.sidebarText,fontSize:10,fontWeight:page===n.id?700:400,gap:2}}>
-            <span style={{fontSize:20,lineHeight:1}}>{n.icon}</span>
+      <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:102,background:C.sidebarBg,display:"flex",borderTop:`1px solid rgba(255,255,255,0.08)`,paddingBottom:"env(safe-area-inset-bottom)"}}>
+        {mainNav.map(n=>(
+          <div key={n.id} onClick={()=>{setPage(n.id);setShowMore(false);}} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"8px 2px 6px",cursor:"pointer",color:page===n.id?C.amber:C.sidebarText,fontSize:9,fontWeight:page===n.id?700:400,gap:2}}>
+            <span style={{fontSize:19,lineHeight:1}}>{n.icon}</span>
             <span>{n.label}</span>
           </div>
         ))}
-        <div onClick={()=>setShowTheme(s=>!s)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"8px 4px 6px",cursor:"pointer",color:showTheme?C.amber:C.sidebarText,fontSize:10,gap:2}}>
-          <span style={{fontSize:20,lineHeight:1}}>🎨</span>
-          <span>Theme</span>
+        <div onClick={()=>setShowMore(s=>!s)} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"8px 2px 6px",cursor:"pointer",color:showMore||["packages","settings"].includes(page)?C.amber:C.sidebarText,fontSize:9,gap:2}}>
+          <span style={{fontSize:19,lineHeight:1}}>⋯</span>
+          <span>More</span>
         </div>
       </div>
     </>
@@ -630,13 +650,13 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
   );
 }
 
-function Bookings({ bookings, setBookings, staffList, services, financials, setFinancials, isMobile }) {
+function Bookings({ bookings, setBookings, staffList, services, financials, setFinancials, isMobile, bookingsPwd }) {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [modal, setModal]   = useState(null);
   const [form,  setForm]    = useState(emptyBooking());
 
-  const bookingGate = usePasswordGate("bookings");
+  const bookingGate = usePasswordGate(bookingsPwd);
 
   const filtered = bookings.filter(b=>{
     const matchStatus = filter==="All"||b.status===filter;
@@ -971,12 +991,13 @@ function parseCSV(text) {
   });
 }
 
-function Financials({ financials, setFinancials, bookings, isMobile }) {
+function Financials({ financials, setFinancials, bookings, isMobile, financialsPwd }) {
   const [tab,    setTab]   = useState("Income");  // "Income" | "Expense"
   const [modal,  setModal] = useState(false);
   const [form,   setForm]  = useState(emptyEntry());
   const importIncRef  = useRef(null);
   const importExpRef  = useRef(null);
+  const finGate = usePasswordGate(financialsPwd);
 
   const incomeList  = financials.filter(f=>f.type==="Income" ).sort((a,b)=>new Date(b.date)-new Date(a.date));
   const expenseList = financials.filter(f=>f.type==="Expense").sort((a,b)=>new Date(b.date)-new Date(a.date));
@@ -989,7 +1010,7 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
     setFinancials(prev=>[{...form,id:uid(),amount:+form.amount},...prev]);
     setModal(false);
   }
-  function remove(id) { if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }
+  function remove(id) { finGate.request(()=>{ if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }); }
 
   function resetFromBookings() {
     if(!window.confirm("This will rebuild income from Completed bookings. Existing income entries will be replaced. Expenses are kept. Continue?")) return;
@@ -1106,9 +1127,13 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
 
   return (
     <div style={{paddingBottom:isMobile?16:0}}>
+      {finGate.Gate}
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10}}>
-        <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
+          {financialsPwd&&finGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Unlocked</span>}
+        </div>
         <Btn variant="danger" size="sm" onClick={resetFromBookings}>↺ Rebuild Income</Btn>
       </div>
 
@@ -1145,7 +1170,7 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
       {/* Tab toolbar */}
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
         <Btn variant={tab==="Income"?"success":"danger"} size="sm"
-          onClick={()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); }}>
+          onClick={()=>finGate.request(()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); })}>
           + Add {tab}
         </Btn>
         {tab==="Income" ? (<>
@@ -1336,7 +1361,84 @@ function Packages({ isMobile }) {
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
-function Settings({ services, setServices }) {
+function PasswordSetting({ label, description, currentPwd, onSave }) {
+  const [mode, setMode]   = useState("idle"); // idle | confirm-remove | set
+  const [step, setStep]   = useState(1);      // 1=verify current, 2=enter new
+  const [input, setInput] = useState("");
+  const [err,   setErr]   = useState("");
+
+  function reset() { setMode("idle"); setStep(1); setInput(""); setErr(""); }
+
+  function handleSet() {
+    if(mode==="idle") { setMode("set"); setStep(currentPwd?1:2); setInput(""); setErr(""); return; }
+    if(mode==="set") {
+      if(step===1) {
+        if(input!==currentPwd) { setErr("Current password incorrect."); setInput(""); return; }
+        setStep(2); setInput(""); setErr(""); return;
+      }
+      if(step===2) {
+        const v = input.trim();
+        if(!v) { setErr("Password cannot be empty."); return; }
+        onSave(v); reset(); return;
+      }
+    }
+    if(mode==="confirm-remove") {
+      if(currentPwd && input!==currentPwd) { setErr("Incorrect password."); setInput(""); return; }
+      onSave(null); reset();
+    }
+  }
+
+  function handleRemove() {
+    if(!currentPwd) return;
+    setMode("confirm-remove"); setInput(""); setErr("");
+  }
+
+  return (
+    <div style={{padding:"16px 18px",background:C.bg,borderRadius:10,marginBottom:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap"}}>
+        <div>
+          <div style={{fontWeight:700,fontSize:14,color:C.text}}>{label}</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{description}</div>
+          <div style={{marginTop:6}}>
+            {currentPwd
+              ? <span style={{fontSize:12,background:C.greenBg,color:C.green,padding:"2px 10px",borderRadius:20,fontWeight:600}}>🔒 Password set</span>
+              : <span style={{fontSize:12,background:C.redBg,color:C.muted,padding:"2px 10px",borderRadius:20,fontWeight:600}}>🔓 No password</span>
+            }
+          </div>
+        </div>
+        {mode==="idle"&&(
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
+            <Btn variant="outline" size="sm" onClick={handleSet}>{currentPwd?"Change Password":"Set Password"}</Btn>
+            {currentPwd&&<Btn variant="danger" size="sm" onClick={handleRemove}>Remove</Btn>}
+          </div>
+        )}
+      </div>
+      {mode!=="idle"&&(
+        <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:10}}>
+          <div style={{fontSize:13,color:C.muted}}>
+            {mode==="confirm-remove" && "Enter current password to remove protection:"}
+            {mode==="set" && step===1 && "Enter current password to verify:"}
+            {mode==="set" && step===2 && "Enter new password:"}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input type="password" value={input} autoFocus
+              onChange={e=>{setInput(e.target.value);setErr("");}}
+              onKeyDown={e=>e.key==="Enter"&&handleSet()}
+              placeholder={mode==="set"&&step===2?"New password…":"Current password…"}
+              style={{flex:1,border:`1.5px solid ${err?C.red:C.border}`,borderRadius:6,padding:"8px 12px",fontSize:14,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}} />
+            <Btn variant="primary" size="sm" onClick={handleSet}>
+              {mode==="confirm-remove"?"Remove":step===1?"Verify":"Save"}
+            </Btn>
+            <Btn variant="ghost" size="sm" onClick={reset}>Cancel</Btn>
+          </div>
+          {err&&<div style={{fontSize:12,color:C.red}}>{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Settings({ services, setServices, passwords, setPasswords }) {
   const [input, setInput] = useState("");
 
   function add() {
@@ -1349,11 +1451,29 @@ function Settings({ services, setServices }) {
   return (
     <div style={{maxWidth:560}}>
       <h2 style={{marginBottom:24,color:C.text,fontSize:22}}>Settings</h2>
+
+      <Card style={{marginBottom:20}}>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Security — Edit/Delete Passwords</div>
+        <div style={{fontSize:13,color:C.muted,marginBottom:16}}>Set passwords to protect editing and deleting records. Remove a password to allow unrestricted access.</div>
+        <PasswordSetting
+          label="Bookings Password"
+          description="Required to edit, delete, or change status of bookings."
+          currentPwd={passwords.bookings}
+          onSave={v=>setPasswords(p=>({...p,bookings:v}))}
+        />
+        <PasswordSetting
+          label="Financials Password"
+          description="Required to add or delete income and expense entries."
+          currentPwd={passwords.financials}
+          onSave={v=>setPasswords(p=>({...p,financials:v}))}
+        />
+      </Card>
+
       <Card>
         <div style={{fontWeight:700,fontSize:15,marginBottom:16}}>Service Types</div>
         <div style={{display:"flex",gap:10,marginBottom:18}}>
           <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="New service name…"
-            style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:14,fontFamily:"inherit"}} />
+            style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:14,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}} />
           <Btn variant="amber" onClick={add}>Add</Btn>
         </div>
         {services.length===0&&<div style={{color:C.muted,fontSize:14}}>No service types yet.</div>}
@@ -1400,6 +1520,8 @@ export default function App() {
   const [financials, setFinancials] = useState(SEED_FINANCIALS);
   const [services,   setServices]   = useState(SEED_SERVICES);
   const [theme,      setTheme]      = useState("light");
+  // Feature passwords — null means no password required
+  const [passwords, setPasswords]   = useState({ bookings: "bookings", financials: null });
   const isMobile = useIsMobile();
 
   const themeObj = THEMES[theme] || THEMES.light;
@@ -1425,11 +1547,11 @@ export default function App() {
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",width:isMobile?"100%":undefined,minWidth:0}}>
         {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPage} isMobile={isMobile} />}
-        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} />}
+        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
-        {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} />}
-        {page==="settings"   && <Settings    services={services} setServices={setServices} />}
+        {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
+        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPage} theme={theme} setTheme={setTheme} />}
     </div>
