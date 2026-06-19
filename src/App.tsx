@@ -275,7 +275,7 @@ function useIsMobile() {
   return mobile;
 }
 
-function Sidebar({ page, setPage, theme, setTheme }) {
+function Sidebar({ page, setPage, theme, setTheme, bookings, financials, staffList }) {
   return (
     <div style={{width:230,background:C.sidebarBg,display:"flex",flexDirection:"column",minHeight:"100vh",flexShrink:0}}>
       <div style={{padding:"24px 20px 16px",display:"flex",flexDirection:"column",alignItems:"center",borderBottom:`1px solid rgba(255,255,255,0.07)`}}>
@@ -301,7 +301,12 @@ function Sidebar({ page, setPage, theme, setTheme }) {
           ))}
         </div>
       </div>
-      <div style={{padding:"10px 16px",color:C.sidebarText,fontSize:10,opacity:0.4}}>v2.0.0</div>
+      <div style={{padding:"10px 16px 14px",borderTop:`1px solid rgba(255,255,255,0.07)`}}>
+        <div onClick={()=>exportFullBackup(bookings,financials,staffList)} style={{cursor:"pointer",padding:"7px 12px",borderRadius:7,background:"rgba(255,255,255,0.07)",color:C.sidebarText,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6,justifyContent:"center"}} title="Download full backup">
+          ⬇ Backup Excel
+        </div>
+        <div style={{textAlign:"center",color:C.sidebarText,fontSize:10,opacity:0.35,marginTop:6}}>v2.0.0</div>
+      </div>
     </div>
   );
 }
@@ -979,6 +984,104 @@ function exportToExcel(sheets, filename) {
   XLSX.writeFile(wb, filename);
 }
 
+// Full backup export — matches BIM_Backup.xlsx format exactly
+function exportFullBackup(bookings, financials, staffList) {
+  const wb = XLSX.utils.book_new();
+  const date = new Date().toISOString().slice(0,10);
+
+  const staffName = (id) => staffList.find(s=>s.id===id)?.name||"—";
+
+  // ── Sheet 1: Bookings ───────────────────────────────────────────────────────
+  const bRows = bookings
+    .sort((a,b)=>new Date(b.datetime)-new Date(a.datetime))
+    .map(b=>({
+      "Booking ID":          b.id,
+      "Client Name":         b.client,
+      "Phone":               b.phone||"",
+      "Package / Service":   b.service,
+      "Event Type":          b.eventType||"",
+      "Venue":               b.venue||"",
+      "Event Date":          b.datetime ? new Date(b.datetime).toLocaleDateString("en-PH",{year:"numeric",month:"long",day:"numeric"}) : "",
+      "Event Time":          b.datetime ? new Date(b.datetime).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}) : "",
+      "No. of Pax":          b.pax||"",
+      "Theme":               b.theme||"",
+      "Staff":               staffName(b.staff),
+      "Package Price (₱)":   +b.price||0,
+      "Amount Paid (₱)":     (+b.price||0)-(+b.balance||0),
+      "Balance (₱)":         +b.balance||0,
+      "Payment Status":      b.paymentStatus||"",
+      "Booking Status":      b.status,
+      "Notes":               b.notes||"",
+    }));
+  const ws_b = XLSX.utils.json_to_sheet(bRows);
+  ws_b["!cols"] = [12,24,15,22,14,28,16,10,10,14,14,14,14,12,18,14,30].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb, ws_b, "📅 Bookings");
+
+  // ── Sheet 2: Income ─────────────────────────────────────────────────────────
+  const incRows = financials
+    .filter(f=>f.type==="Income")
+    .sort((a,b)=>new Date(b.date)-new Date(a.date))
+    .map(f=>({
+      "Date":            f.date,
+      "Category":        f.category,
+      "Description":     f.description,
+      "Amount (₱)":      f.amount,
+      "Method":          f.method,
+      "Linked Booking":  f.bookingId||"",
+      "Notes":           "",
+    }));
+  const ws_i = XLSX.utils.json_to_sheet(incRows);
+  ws_i["!cols"] = [14,20,40,14,16,16,30].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb, ws_i, "💰 Income");
+
+  // ── Sheet 3: Expenses ───────────────────────────────────────────────────────
+  const expRows = financials
+    .filter(f=>f.type==="Expense")
+    .sort((a,b)=>new Date(b.date)-new Date(a.date))
+    .map(f=>({
+      "Date":            f.date,
+      "Category":        f.category,
+      "Description":     f.description,
+      "Amount (₱)":      f.amount,
+      "Method":          f.method,
+      "Linked Booking":  f.bookingId||"",
+      "Notes":           "",
+    }));
+  const ws_e = XLSX.utils.json_to_sheet(expRows);
+  ws_e["!cols"] = [14,20,40,14,16,16,30].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb, ws_e, "💸 Expenses");
+
+  // ── Sheet 4: Summary ────────────────────────────────────────────────────────
+  const totalIncome  = financials.filter(f=>f.type==="Income" ).reduce((s,f)=>s+f.amount,0);
+  const totalExpense = financials.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
+  const summaryRows = [
+    { "Metric":"💰 FINANCIAL SUMMARY",        "Value":"" },
+    { "Metric":"Total Income",                "Value":totalIncome },
+    { "Metric":"Total Expenses",              "Value":totalExpense },
+    { "Metric":"Net Profit / Loss",           "Value":totalIncome-totalExpense },
+    { "Metric":"No. of Income Entries",       "Value":financials.filter(f=>f.type==="Income").length },
+    { "Metric":"No. of Expense Entries",      "Value":financials.filter(f=>f.type==="Expense").length },
+    { "Metric":"", "Value":"" },
+    { "Metric":"📅 BOOKING SUMMARY",          "Value":"" },
+    { "Metric":"Total Bookings",              "Value":bookings.length },
+    { "Metric":"Completed",                   "Value":bookings.filter(b=>b.status==="Completed").length },
+    { "Metric":"Reserved",                    "Value":bookings.filter(b=>b.status==="Reserved").length },
+    { "Metric":"Inquiry",                     "Value":bookings.filter(b=>b.status==="Inquiry").length },
+    { "Metric":"Cancelled",                   "Value":bookings.filter(b=>b.status==="Cancelled").length },
+    { "Metric":"", "Value":"" },
+    { "Metric":"Total Package Value (active)","Value":bookings.filter(b=>b.status!=="Cancelled").reduce((s,b)=>s+(+b.price||0),0) },
+    { "Metric":"Total Collected",             "Value":bookings.reduce((s,b)=>s+((+b.price||0)-(+b.balance||0)),0) },
+    { "Metric":"Total Pending Balance",       "Value":bookings.filter(b=>+b.balance>0).reduce((s,b)=>s+(+b.balance||0),0) },
+    { "Metric":"", "Value":"" },
+    { "Metric":"Export Date", "Value":date },
+  ];
+  const ws_s = XLSX.utils.json_to_sheet(summaryRows);
+  ws_s["!cols"] = [{wch:28},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, ws_s, "📊 Summary");
+
+  XLSX.writeFile(wb, `BIM-Backup-${date}.xlsx`);
+}
+
 // Simple CSV import helper
 function parseCSV(text) {
   const lines = text.trim().split("\n");
@@ -1438,7 +1541,7 @@ function PasswordSetting({ label, description, currentPwd, onSave }) {
   );
 }
 
-function Settings({ services, setServices, passwords, setPasswords }) {
+function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList }) {
   const [input, setInput] = useState("");
 
   function add() {
@@ -1451,6 +1554,19 @@ function Settings({ services, setServices, passwords, setPasswords }) {
   return (
     <div style={{maxWidth:560}}>
       <h2 style={{marginBottom:24,color:C.text,fontSize:22}}>Settings</h2>
+
+      <Card style={{marginBottom:20}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📥 Backup Spreadsheet</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:14}}>Download a full Excel backup with all bookings, income, expenses and summary — all in one file with separate tabs.</div>
+          </div>
+        </div>
+        <Btn variant="success" onClick={()=>exportFullBackup(bookings,financials,staffList)}>
+          ⬇ Download Full Backup (.xlsx)
+        </Btn>
+        <div style={{fontSize:11,color:C.muted,marginTop:8}}>File: BIM-Backup-[date].xlsx • 4 tabs: Bookings, Income, Expenses, Summary</div>
+      </Card>
 
       <Card style={{marginBottom:20}}>
         <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Security — Edit/Delete Passwords</div>
@@ -1537,12 +1653,12 @@ export default function App() {
   return (
     <ThemeContext.Provider value={themeObj}>
     <div key={theme} style={{display:"flex",minHeight:"100vh",background:themeObj.bg,fontFamily:"Inter,system-ui,sans-serif",color:themeObj.text}}>
-      {!isMobile&&<Sidebar page={page} setPage={setPage} theme={theme} setTheme={setTheme} />}
+      {!isMobile&&<Sidebar page={page} setPage={setPage} theme={theme} setTheme={setTheme} bookings={bookings} financials={financials} staffList={staffList} />}
       {isMobile&&(
         <div style={{position:"fixed",top:0,left:0,right:0,zIndex:99,background:themeObj.sidebarBg,padding:"10px 16px 10px",display:"flex",alignItems:"center",gap:10,boxShadow:"0 2px 8px rgba(0,0,0,0.2)"}}>
           <img src={LOGO_URI} alt="logo" style={{width:32,height:32,borderRadius:"50%",objectFit:"cover",border:`1.5px solid ${themeObj.amber}`,background:"#fff",flexShrink:0}} />
           <span style={{color:themeObj.amber,fontWeight:800,fontSize:15,flex:1}}>Built-in Memories</span>
-          <span style={{color:themeObj.sidebarText,fontSize:11}}>· {NAV.find(n=>n.id===page)?.label}</span>
+          <span style={{color:themeObj.sidebarText,fontSize:11,cursor:"pointer",padding:"4px 8px",borderRadius:6,background:"rgba(255,255,255,0.08)"}} onClick={()=>exportFullBackup(bookings,financials,staffList)} title="Download Backup">⬇</span>
         </div>
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",width:isMobile?"100%":undefined,minWidth:0}}>
@@ -1551,7 +1667,7 @@ export default function App() {
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
-        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} />}
+        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPage} theme={theme} setTheme={setTheme} />}
     </div>
