@@ -265,6 +265,8 @@ function usePasswordGate(correctPassword) {
   const callbackRef = useRef(null);
 
   function request(cb) {
+    // No password set — run immediately, no gate needed
+    if (!correctPassword) { cb(); return; }
     if (unlocked) { cb(); return; }
     callbackRef.current = cb;
     setPw(""); setErr(false); setShow(true);
@@ -1214,15 +1216,36 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
   function remove(id) { finGate.request(()=>{ if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }); }
 
   function resetFromBookings() {
-    if(!window.confirm("This will rebuild income from Completed bookings. Existing income entries will be replaced. Expenses are kept. Continue?")) return;
-    const newIncome = bookings.filter(b=>b.status==="Completed").map(b=>({
-      id:uid(), date:new Date(b.datetime).toISOString().slice(0,10),
-      type:"Income", category:"Service Revenue", bookingId:b.id,
-      amount:+b.price||0,
-      description:`${b.service} – ${b.client}${b.venue?" @ "+b.venue:""}`,
-      method:"Cash",
-    }));
-    setFinancials(prev=>[...prev.filter(f=>f.type==="Expense"), ...newIncome]);
+    if(!window.confirm("This will update income from Completed bookings. Manually added income entries will be kept. Continue?")) return;
+    setFinancials(prev=>{
+      const expenses     = prev.filter(f=>f.type==="Expense");
+      const manualIncome = prev.filter(f=>f.type==="Income" && !f.bookingId);
+      // Build a map of existing booking-linked income by bookingId
+      const existingByBookingId = new Map(
+        prev.filter(f=>f.type==="Income" && f.bookingId).map(f=>[f.bookingId, f])
+      );
+      // For each completed booking: update existing entry or create new one (preserving ID)
+      const completedBookingIds = new Set(bookings.filter(b=>b.status==="Completed").map(b=>b.id));
+      const updatedIncome = bookings.filter(b=>b.status==="Completed").map(b=>{
+        const existing = existingByBookingId.get(b.id);
+        return {
+          // Reuse existing ID so no duplicates — only create new ID if truly new entry
+          id:   existing ? existing.id : uid(),
+          date: existing ? existing.date : new Date(b.datetime).toISOString().slice(0,10),
+          type: "Income",
+          category: "Service Revenue",
+          bookingId: b.id,
+          amount: +b.price||0,
+          description: `${b.service} – ${b.client}${b.venue?" @ "+b.venue:""}`,
+          method: existing ? existing.method : "Cash",
+        };
+      });
+      // Keep booking-income for bookings that are no longer Completed (don't delete history)
+      const nonCompletedBookingIncome = prev.filter(
+        f=>f.type==="Income" && f.bookingId && !completedBookingIds.has(f.bookingId)
+      );
+      return [...expenses, ...manualIncome, ...nonCompletedBookingIncome, ...updatedIncome];
+    });
   }
 
   // ── Excel helpers ──────────────────────────────────────────────────────────
@@ -1274,8 +1297,17 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
           method:r["Method"]||"Cash", bookingId:r["Linked Booking"]||null,
         }));
         if(!imported.length) return alert("No valid rows found.");
-        if(window.confirm(`Import ${imported.length} income entries? Existing income will be replaced.`))
-          setFinancials(prev=>[...prev.filter(f=>f.type==="Expense"),...imported]);
+        if(window.confirm(`Import ${imported.length} income entries? Manual income entries will be kept. Continue?`))
+          setFinancials(prev=>{
+            const expenses = prev.filter(f=>f.type==="Expense");
+            const importedIds = new Set(imported.map(f=>f.id).filter(Boolean));
+            // Keep existing income entries whose ID is not in the import (manual entries)
+            const keptIncome = prev.filter(f=>f.type==="Income" && !importedIds.has(f.id));
+            // Merge: kept manual + imported (imported overwrites matching IDs)
+            const importedMap = new Map(imported.map(f=>[f.id,f]));
+            const merged = [...keptIncome.filter(f=>!importedMap.has(f.id)), ...imported];
+            return [...expenses, ...merged];
+          });
       } catch { alert("Failed to read file."); }
     };
     reader.readAsBinaryString(file);
@@ -1296,8 +1328,15 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
           method:r["Method"]||"Cash", bookingId:r["Linked Booking"]||null,
         }));
         if(!imported.length) return alert("No valid rows found.");
-        if(window.confirm(`Import ${imported.length} expense entries? Existing expenses will be replaced.`))
-          setFinancials(prev=>[...prev.filter(f=>f.type==="Income"),...imported]);
+        if(window.confirm(`Import ${imported.length} expense entries? Manual expense entries will be kept. Continue?`))
+          setFinancials(prev=>{
+            const income = prev.filter(f=>f.type==="Income");
+            const importedIds = new Set(imported.map(f=>f.id).filter(Boolean));
+            const keptExpenses = prev.filter(f=>f.type==="Expense" && !importedIds.has(f.id));
+            const importedMap = new Map(imported.map(f=>[f.id,f]));
+            const merged = [...keptExpenses.filter(f=>!importedMap.has(f.id)), ...imported];
+            return [...income, ...merged];
+          });
       } catch { alert("Failed to read file."); }
     };
     reader.readAsBinaryString(file);
