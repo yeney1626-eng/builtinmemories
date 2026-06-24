@@ -265,8 +265,8 @@ function usePasswordGate(correctPassword) {
   const callbackRef = useRef(null);
 
   function request(cb) {
-    // No password set — run immediately, no gate needed
-    if (!correctPassword) { cb(); return; }
+    // No password set (null or empty string) — run immediately, no gate needed
+    if (!correctPassword || correctPassword.trim() === "") { cb(); return; }
     if (unlocked) { cb(); return; }
     callbackRef.current = cb;
     setPw(""); setErr(false); setShow(true);
@@ -707,10 +707,16 @@ function Dashboard({ bookings, financials, setPage, isMobile }) {
 
 // ── Bookings ─────────────────────────────────────────────────────────────────
 function emptyBooking() {
-  return {client:"",phone:"",service:"",staff:"",datetime:"",duration:240,status:"Reserved",notes:"",price:"",venue:"",eventType:"",pax:"",theme:"",paymentStatus:"Pending Balance",balance:""};
+  return {client:"",phone:"",service:"",staff:"",datetime:"",duration:240,status:"Reserved",notes:"",price:"",venue:"",eventType:"",pax:"",theme:"",paymentStatus:"Pending Balance",balance:"",reservationFee:""};
 }
 
 function BookingForm({ form, setForm, staffList, services, onSave, onCancel, title }) {
+  const price      = +form.price      || 0;
+  const resFee     = +form.reservationFee || 0;
+  const balance    = +form.balance    || 0;
+  const amtPaid    = price - balance;
+  const isReserved = form.status === "Reserved" || form.status === "Inquiry";
+
   return (
     <Modal title={title} onClose={onCancel} width={620}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
@@ -732,15 +738,42 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
           <option value="">Select...</option>
           {staffList.filter(s=>s.status==="Active").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
         </Select>
-        <Input label="Package Price (₱)" type="number" value={form.price} onChange={e=>setForm({...form,price:+e.target.value})} />
-        <Input label="Balance (₱)" type="number" value={form.balance||""} onChange={e=>setForm({...form,balance:+e.target.value})} />
-        <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>setForm({...form,paymentStatus:e.target.value})}>
-          <option value="">Select...</option>
-          {["Paid","Pending Balance","Pending Reservation"].map(s=><option key={s}>{s}</option>)}
-        </Select>
         <Select label="Booking Status" value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>
           {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s}>{s}</option>)}
         </Select>
+
+        {/* ── Payment Section ─────────────────────────────────── */}
+        <div style={{gridColumn:"span 2",background:C.bg,borderRadius:10,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+          <div style={{fontWeight:700,fontSize:13,color:C.navy,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.05em"}}>💳 Payment</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Input label="Package Price (₱)" type="number" value={form.price} onChange={e=>setForm({...form,price:+e.target.value})} />
+            <Input label="Reservation Fee Paid (₱)" type="number" value={form.reservationFee||""} onChange={e=>setForm({...form,reservationFee:+e.target.value,balance:Math.max(0,(+form.price||0)-(+e.target.value||0))})} />
+            <Input label="Balance (₱)" type="number" value={form.balance||""} onChange={e=>setForm({...form,balance:+e.target.value})} />
+            <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>setForm({...form,paymentStatus:e.target.value})}>
+              <option value="">Select...</option>
+              {["Paid","Pending Balance","Pending Reservation"].map(s=><option key={s}>{s}</option>)}
+            </Select>
+          </div>
+          {/* Live payment summary */}
+          {price > 0 && (
+            <div style={{marginTop:12,display:"flex",gap:10,flexWrap:"wrap"}}>
+              <span style={{fontSize:12,background:C.green+"18",color:C.green,fontWeight:700,padding:"4px 10px",borderRadius:20}}>
+                Paid: ₱{amtPaid.toLocaleString()}
+              </span>
+              {balance > 0 && (
+                <span style={{fontSize:12,background:C.amber+"22",color:C.amber,fontWeight:700,padding:"4px 10px",borderRadius:20}}>
+                  Balance: ₱{balance.toLocaleString()}
+                </span>
+              )}
+              {balance === 0 && price > 0 && (
+                <span style={{fontSize:12,background:C.green+"18",color:C.green,fontWeight:700,padding:"4px 10px",borderRadius:20}}>
+                  ✓ Fully Paid
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
         <div style={{gridColumn:"span 2",display:"flex",flexDirection:"column",gap:4}}>
           <label style={{fontSize:12,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em"}}>Notes</label>
           <textarea value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}
@@ -774,13 +807,51 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
 
   function save() {
     if(!form.client||!form.service||!form.datetime) return alert("Client, service, and date are required.");
-    const isNew = modal==="new";
-    const oldBooking = isNew?null:bookings.find(b=>b.id===modal);
-    const newBooking = isNew?{...form,id:uid()}:{...form};
-    if(newBooking.status==="Completed"&&(!oldBooking||oldBooking.status!=="Completed")) {
-      const staffName = staffList.find(s=>s.id===newBooking.staff)?.name||"";
-      setFinancials(prev=>[...prev,{id:uid(),date:new Date(newBooking.datetime).toISOString().slice(0,10),type:"Income",category:"Service Revenue",bookingId:newBooking.id||modal,amount:+newBooking.price||0,description:`${newBooking.service} – ${newBooking.client}${staffName?" ("+staffName+")":""}`,method:"Cash"}]);
-    }
+    const isNew      = modal==="new";
+    const oldBooking = isNew ? null : bookings.find(b=>b.id===modal);
+    const newBooking = isNew ? {...form, id:uid()} : {...form};
+    const bId        = newBooking.id || modal;
+    const staffName  = staffList.find(s=>s.id===newBooking.staff)?.name||"";
+    const eventDate  = newBooking.datetime ? new Date(newBooking.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+    const resFee     = +newBooking.reservationFee || 0;
+    const fullPrice  = +newBooking.price || 0;
+
+    setFinancials(prev => {
+      let updated = [...prev];
+      const existingIncome = updated.find(f=>f.type==="Income"&&f.bookingId===bId);
+
+      if(newBooking.status==="Completed") {
+        // Completed: income entry = full price
+        if(existingIncome) {
+          // Update existing entry to full price
+          updated = updated.map(f=>
+            f.type==="Income"&&f.bookingId===bId
+              ? {...f, amount:fullPrice, description:`${newBooking.service} – ${newBooking.client}${staffName?" ("+staffName+")":""}`, date:eventDate}
+              : f
+          );
+        } else {
+          // New completed booking income entry
+          updated.push({id:uid(),date:eventDate,type:"Income",category:"Service Revenue",bookingId:bId,
+            amount:fullPrice,description:`${newBooking.service} – ${newBooking.client}${staffName?" ("+staffName+")":""}`,method:"Cash"});
+        }
+      } else if((newBooking.status==="Reserved"||newBooking.status==="Inquiry") && resFee > 0) {
+        // Reserved with reservation fee: add/update income for the fee paid
+        if(existingIncome) {
+          // Update existing reservation fee entry
+          updated = updated.map(f=>
+            f.type==="Income"&&f.bookingId===bId
+              ? {...f, amount:resFee, description:`Reservation Fee – ${newBooking.service} (${newBooking.client})`, date:eventDate}
+              : f
+          );
+        } else {
+          // New reservation fee income entry
+          updated.push({id:uid(),date:eventDate,type:"Income",category:"Reservation Fee",bookingId:bId,
+            amount:resFee,description:`Reservation Fee – ${newBooking.service} (${newBooking.client})`,method:"Cash"});
+        }
+      }
+      return updated;
+    });
+
     setBookings(prev=>isNew?[newBooking,...prev]:prev.map(b=>b.id===modal?newBooking:b));
     setModal(null);
   }
@@ -1328,14 +1399,19 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
           method:r["Method"]||"Cash", bookingId:r["Linked Booking"]||null,
         }));
         if(!imported.length) return alert("No valid rows found.");
-        if(window.confirm(`Import ${imported.length} expense entries? Manual expense entries will be kept. Continue?`))
+        if(window.confirm(`Import ${imported.length} expense entries? Existing entries will be kept. Duplicates will be updated. Continue?`))
           setFinancials(prev=>{
             const income = prev.filter(f=>f.type==="Income");
-            const importedIds = new Set(imported.map(f=>f.id).filter(Boolean));
-            const keptExpenses = prev.filter(f=>f.type==="Expense" && !importedIds.has(f.id));
-            const importedMap = new Map(imported.map(f=>[f.id,f]));
-            const merged = [...keptExpenses.filter(f=>!importedMap.has(f.id)), ...imported];
-            return [...income, ...merged];
+            // Build map of imported entries by ID
+            const importedMap = new Map(imported.map(f=>[f.id, f]));
+            // Keep ALL existing expenses, but overwrite if same ID exists in import
+            const updatedExpenses = prev
+              .filter(f=>f.type==="Expense")
+              .map(f=> importedMap.has(f.id) ? importedMap.get(f.id) : f);
+            // Append imported entries whose ID doesn't exist yet
+            const existingIds = new Set(prev.filter(f=>f.type==="Expense").map(f=>f.id));
+            const newEntries = imported.filter(f=> !existingIds.has(f.id));
+            return [...income, ...updatedExpenses, ...newEntries];
           });
       } catch { alert("Failed to read file."); }
     };
