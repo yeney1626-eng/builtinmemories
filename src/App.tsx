@@ -1,102 +1,102 @@
 import { useState, useEffect, useRef, createContext, useContext } from "react";
 import * as XLSX from "xlsx";
 
-// ── Google Sheets Sync ────────────────────────────────────────────────────────
-const GS_URL_KEY = "bim_gs_url";   // localStorage key for the script URL
-const GS_LAST_KEY = "bim_gs_last"; // localStorage key for last-saved timestamp
+// ── Google Sheets Silent Sync ─────────────────────────────────────────────────
+const GS_URL = "https://script.google.com/macros/s/AKfycbxZY2kGpyDBA_vMMI17I_8d8foYqYFecrPwvWer62F2QxsUVyS-EVj_BlOzrdKoxwfk/exec";
 
-async function gsFetch(url: string, action: string, data?: object) {
-  const res = await fetch(url, {
+async function gsFetch(action: string, data?: object) {
+  const res = await fetch(GS_URL, {
     method: "POST",
     body: JSON.stringify({ action, data }),
-    headers: { "Content-Type": "text/plain" }, // avoids CORS preflight
+    headers: { "Content-Type": "text/plain" },
   });
   return res.json();
 }
 
-function useGoogleSync(bookings: any[], financials: any[], staffList: any[], services: any[], setBookings: Function, setFinancials: Function, setStaffList: Function, setServices: Function) {
-  const [gsUrl, setGsUrl]       = useState<string>(() => localStorage.getItem(GS_URL_KEY) || "");
-  const [syncStatus, setSyncStatus] = useState<"idle"|"saving"|"loading"|"ok"|"error">("idle");
-  const [lastSynced, setLastSynced] = useState<string>(() => localStorage.getItem(GS_LAST_KEY) || "");
-  const [syncMsg, setSyncMsg]   = useState<string>("");
-  const saveTimer               = useRef<any>(null);
+function useGoogleSync(
+  bookings: any[], financials: any[], staffList: any[], services: any[],
+  setBookings: Function, setFinancials: Function, setStaffList: Function, setServices: Function
+) {
+  const saveTimer  = useRef<any>(null);
+  const didLoad    = useRef(false);
 
-  // Persist URL to localStorage whenever it changes
+  // Auto-load once on mount (restores data from sheet on login)
   useEffect(() => {
-    localStorage.setItem(GS_URL_KEY, gsUrl);
-  }, [gsUrl]);
-
-  // Auto-save 3 s after any data change (debounced)
-  useEffect(() => {
-    if (!gsUrl) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { saveToSheet(); }, 3000);
-    return () => clearTimeout(saveTimer.current);
-  }, [bookings, financials, staffList, services, gsUrl]);
-
-  async function saveToSheet() {
-    if (!gsUrl) return;
-    setSyncStatus("saving");
-    try {
-      const result = await gsFetch(gsUrl, "save", { bookings, financials, staffList, services });
-      if (result.ok) {
-        const ts = new Date().toLocaleString("en-PH", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
-        setLastSynced(ts);
-        localStorage.setItem(GS_LAST_KEY, ts);
-        setSyncStatus("ok");
-        setSyncMsg("Synced " + ts);
-      } else {
-        setSyncStatus("error");
-        setSyncMsg("Save failed: " + (result.error || "unknown error"));
-      }
-    } catch(e: any) {
-      setSyncStatus("error");
-      setSyncMsg("Network error: " + e.message);
-    }
-  }
-
-  async function loadFromSheet() {
-    if (!gsUrl) { setSyncMsg("No sync URL set."); return; }
-    setSyncStatus("loading");
-    setSyncMsg("Loading from Google Sheets…");
-    try {
-      const result = await gsFetch(gsUrl, "load", {});
+    if (didLoad.current) return;
+    didLoad.current = true;
+    gsFetch("load", {}).then(result => {
       if (result.ok && result.data) {
         const d = result.data;
-        if (d.bookings   && Array.isArray(d.bookings))   setBookings(d.bookings);
-        if (d.financials && Array.isArray(d.financials)) setFinancials(d.financials);
-        if (d.staffList  && Array.isArray(d.staffList))  setStaffList(d.staffList);
-        if (d.services   && Array.isArray(d.services))   setServices(d.services);
-        const ts = new Date().toLocaleString("en-PH", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
-        setLastSynced(ts);
-        localStorage.setItem(GS_LAST_KEY, ts);
-        setSyncStatus("ok");
-        setSyncMsg("Restored ✓ — bookings: " + (d.bookings?.length||0) + ", financials: " + (d.financials?.length||0));
-      } else {
-        setSyncStatus("error");
-        setSyncMsg(result.data === null ? "Sheet is empty — nothing to restore yet." : ("Load failed: " + (result.error||"unknown")));
+        // Merge by ID on initial load — prevents duplicates if app already has local state
+        if (d.bookings && Array.isArray(d.bookings)) {
+          setBookings(prev => {
+            const map = new Map(prev.map((b:any) => [b.id, b]));
+            d.bookings.forEach((b:any) => map.set(b.id, b));
+            return Array.from(map.values());
+          });
+        }
+        if (d.financials && Array.isArray(d.financials)) {
+          setFinancials(prev => {
+            const map = new Map(prev.map((f:any) => [f.id, f]));
+            d.financials.forEach((f:any) => map.set(f.id, f));
+            return Array.from(map.values());
+          });
+        }
+        if (d.staffList && Array.isArray(d.staffList)) {
+          setStaffList(prev => {
+            const map = new Map(prev.map((s:any) => [s.id, s]));
+            d.staffList.forEach((s:any) => map.set(s.id, s));
+            return Array.from(map.values());
+          });
+        }
+        if (d.services && Array.isArray(d.services)) setServices(d.services);
       }
-    } catch(e: any) {
-      setSyncStatus("error");
-      setSyncMsg("Network error: " + e.message);
+    }).catch(() => {}); // silent — no UI feedback
+  }, []);
+
+  // Auto-save 3 s after any data change (debounced, silent)
+  useEffect(() => {
+    if (!didLoad.current) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      gsFetch("save", { bookings, financials, staffList, services }).catch(() => {});
+    }, 3000);
+    return () => clearTimeout(saveTimer.current);
+  }, [bookings, financials, staffList, services]);
+
+  async function restore() {
+    const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
+    if (result.ok && result.data) {
+      const d = result.data;
+      // Merge by ID — sheet record overwrites app record if same ID, new IDs are added, no duplicates
+      if (d.bookings && Array.isArray(d.bookings)) {
+        setBookings(prev => {
+          const map = new Map(prev.map((b:any) => [b.id, b]));
+          d.bookings.forEach((b:any) => map.set(b.id, b));
+          return Array.from(map.values());
+        });
+      }
+      if (d.financials && Array.isArray(d.financials)) {
+        setFinancials(prev => {
+          const map = new Map(prev.map((f:any) => [f.id, f]));
+          d.financials.forEach((f:any) => map.set(f.id, f));
+          return Array.from(map.values());
+        });
+      }
+      if (d.staffList && Array.isArray(d.staffList)) {
+        setStaffList(prev => {
+          const map = new Map(prev.map((s:any) => [s.id, s]));
+          d.staffList.forEach((s:any) => map.set(s.id, s));
+          return Array.from(map.values());
+        });
+      }
+      if (d.services && Array.isArray(d.services)) setServices(d.services);
+    } else {
+      alert("Nothing found in the backup sheet yet.");
     }
   }
 
-  async function testConnection() {
-    if (!gsUrl) { setSyncMsg("Enter a URL first."); return; }
-    setSyncStatus("loading");
-    setSyncMsg("Testing…");
-    try {
-      const result = await gsFetch(gsUrl, "ping", {});
-      if (result.ok) { setSyncStatus("ok"); setSyncMsg("Connected ✓ — " + result.message); }
-      else           { setSyncStatus("error"); setSyncMsg("Error: " + (result.error||"unknown")); }
-    } catch(e: any) {
-      setSyncStatus("error");
-      setSyncMsg("Cannot reach URL: " + e.message);
-    }
-  }
-
-  return { gsUrl, setGsUrl, syncStatus, lastSynced, syncMsg, saveToSheet, loadFromSheet, testConnection };
+  return { restore };
 }
 
 // ── Logo ──────────────────────────────────────────────────────────────────────
@@ -1639,9 +1639,9 @@ function PasswordSetting({ label, description, currentPwd, onSave }) {
   );
 }
 
-function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, sync }) {
+function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore }) {
   const [input, setInput] = useState("");
-  const { gsUrl, setGsUrl, syncStatus, lastSynced, syncMsg, saveToSheet, loadFromSheet, testConnection } = sync;
+  const [restoring, setRestoring] = useState(false);
 
   function add() {
     const v = input.trim(); if(!v) return;
@@ -1650,69 +1650,16 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
   }
   function remove(s) { if(!window.confirm(`Remove "${s}"?`)) return; setServices(prev=>prev.filter(x=>x!==s)); }
 
-  const statusColor = { idle:"#6B7A99", saving:C.amber, loading:C.amber, ok:C.green, error:C.red }[syncStatus];
-  const statusIcon  = { idle:"○", saving:"⟳", loading:"⟳", ok:"✓", error:"✗" }[syncStatus];
+  async function handleRestore() {
+    if(!window.confirm("Restore all data from the backup sheet? This will replace everything currently in the app.")) return;
+    setRestoring(true);
+    await onRestore();
+    setRestoring(false);
+  }
 
   return (
     <div style={{maxWidth:560}}>
       <h2 style={{marginBottom:24,color:C.text,fontSize:22}}>Settings</h2>
-
-      {/* ── Google Sheets Auto-Sync ─────────────────────────────────────── */}
-      <Card style={{marginBottom:20,border:`2px solid ${C.amber}`}}>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:4,display:"flex",alignItems:"center",gap:8}}>
-          <span>☁️ Google Sheets Auto-Sync</span>
-          {syncStatus!=="idle" && (
-            <span style={{fontSize:12,fontWeight:600,color:statusColor,background:statusColor+"18",padding:"2px 8px",borderRadius:20}}>
-              {statusIcon} {syncStatus==="saving"?"Saving…":syncStatus==="loading"?"Loading…":syncStatus==="ok"?"Synced":"Error"}
-            </span>
-          )}
-        </div>
-        <div style={{fontSize:13,color:C.muted,marginBottom:14}}>
-          Paste your Google Apps Script Web App URL below. The app will <strong>automatically save</strong> every change and you can <strong>restore</strong> all data on any device.
-        </div>
-
-        {/* How-to steps */}
-        <div style={{background:C.bg,borderRadius:8,padding:"12px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.7}}>
-          <strong style={{color:C.text,display:"block",marginBottom:6}}>📋 One-time setup (5 minutes):</strong>
-          1. Open <strong>script.google.com</strong> → New project → paste <code>BIM_GoogleAppsScript.gs</code><br/>
-          2. Click <strong>Deploy → New deployment → Web App</strong><br/>
-          3. Set <em>Execute as: Me</em> · <em>Who has access: Anyone</em> → Deploy<br/>
-          4. Copy the <strong>Web App URL</strong> and paste it below<br/>
-          5. Click <strong>Test</strong> to confirm, then <strong>Restore</strong> on any new device
-        </div>
-
-        <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          <div style={{display:"flex",gap:8}}>
-            <input
-              value={gsUrl}
-              onChange={e=>setGsUrl(e.target.value)}
-              placeholder="https://script.google.com/macros/s/…/exec"
-              style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:13,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}}
-            />
-            <Btn variant="outline" size="sm" onClick={testConnection}>Test</Btn>
-          </div>
-
-          {syncMsg && (
-            <div style={{fontSize:12,color:statusColor,background:statusColor+"12",padding:"6px 10px",borderRadius:6}}>
-              {syncMsg}
-            </div>
-          )}
-
-          {lastSynced && (
-            <div style={{fontSize:11,color:C.muted}}>Last synced: {lastSynced}</div>
-          )}
-
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            <Btn variant="amber" size="sm" onClick={saveToSheet} style={{flex:1}}>
-              ☁️ Save to Sheet Now
-            </Btn>
-            <Btn variant="success" size="sm" onClick={()=>{ if(window.confirm("This will REPLACE all current data with what's saved in Google Sheets. Continue?")) loadFromSheet(); }} style={{flex:1}}>
-              ⬇ Restore from Sheet
-            </Btn>
-          </div>
-          <div style={{fontSize:11,color:C.muted}}>Auto-saves 3 seconds after any change when a URL is set.</div>
-        </div>
-      </Card>
 
       <Card style={{marginBottom:20}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12}}>
@@ -1721,9 +1668,14 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
             <div style={{fontSize:13,color:C.muted,marginBottom:14}}>Download a full Excel backup with all bookings, income, expenses and summary — all in one file with separate tabs.</div>
           </div>
         </div>
-        <Btn variant="success" onClick={()=>exportFullBackup(bookings,financials,staffList)}>
-          ⬇ Download Full Backup (.xlsx)
-        </Btn>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+          <Btn variant="success" onClick={()=>exportFullBackup(bookings,financials,staffList)}>
+            ⬇ Download Full Backup (.xlsx)
+          </Btn>
+          <Btn variant="amber" onClick={handleRestore} style={{opacity:restoring?0.6:1}}>
+            {restoring ? "⟳ Restoring…" : "☁️ Restore from Backup Sheet"}
+          </Btn>
+        </div>
         <div style={{fontSize:11,color:C.muted,marginTop:8}}>File: BIM-Backup-[date].xlsx • 4 tabs: Bookings, Income, Expenses, Summary</div>
       </Card>
 
@@ -1799,8 +1751,8 @@ export default function App() {
   const [passwords, setPasswords]   = useState({ bookings: "bookings", financials: null });
   const isMobile = useIsMobile();
 
-  // Google Sheets auto-sync
-  const sync = useGoogleSync(bookings, financials, staffList, services, setBookings, setFinancials, setStaffList, setServices);
+  // Google Sheets silent sync — auto-loads on login, auto-saves on change
+  const { restore } = useGoogleSync(bookings, financials, staffList, services, setBookings, setFinancials, setStaffList, setServices);
 
   const themeObj = THEMES[theme] || THEMES.light;
   // Update module-level C synchronously so all components see it
@@ -1829,7 +1781,7 @@ export default function App() {
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
-        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} sync={sync} />}
+        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPage} theme={theme} setTheme={setTheme} />}
     </div>
