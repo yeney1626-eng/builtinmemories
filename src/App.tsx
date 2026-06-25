@@ -541,6 +541,28 @@ function Dashboard({ bookings, financials, setPage, isMobile }) {
   // Selected month booking count (non-cancelled)
   const monthBookings = bookings.filter(b=>b.status!=="Cancelled"&&new Date(b.datetime).getMonth()===selM&&new Date(b.datetime).getFullYear()===selY).length;
 
+  // Package popularity stats
+  const allSvcNames = ["Mini Figure Experience","Guestbook Frame Experience","Full Experience"];
+  const pkgStats = allSvcNames.map(name => {
+    const matches = bookings.filter(b => {
+      const svcs = Array.isArray(b.services)&&b.services.length>0 ? b.services : (b.service ? [b.service] : []);
+      return svcs.includes(name) && b.status !== "Cancelled";
+    });
+    const revenue = matches.reduce((s,b) => {
+      // If multi-package, attribute proportional share
+      const svcs = Array.isArray(b.services)&&b.services.length>0 ? b.services : [b.service];
+      const pkgRate = SEED_PACKAGE_RATES.find(p=>p.name===name&&p.pax===+b.pax)?.rate || 0;
+      const totalRate = svcs.reduce((ss,sn)=>{
+        const r = SEED_PACKAGE_RATES.find(p=>p.name===sn&&p.pax===+b.pax)?.rate||0;
+        return ss+r;
+      },0);
+      const share = totalRate>0 ? pkgRate/totalRate : 1/svcs.length;
+      return s + (+b.price||0)*share;
+    },0);
+    return { name, count: matches.length, revenue };
+  });
+  const maxPkgCount = Math.max(...pkgStats.map(p=>p.count), 1);
+
   const upcoming = bookings.filter(b=>["Reserved","Inquiry"].includes(b.status)&&new Date(b.datetime)>=now).sort((a,b)=>new Date(a.datetime).getTime()-new Date(b.datetime).getTime()).slice(0,6);
 
   // 6-month chart
@@ -613,6 +635,33 @@ function Dashboard({ bookings, financials, setPage, isMobile }) {
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",paddingTop:12,borderTop:`1px solid ${C.border}`}}>
           <span style={{fontSize:13,color:C.muted}}>Grand Total (all active bookings)</span>
           <span style={{fontSize:20,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(totalBookingIncome)}</span>
+        </div>
+      </Card>
+
+      {/* ── Package Stats ────────────────────────────────────────────── */}
+      <Card style={{marginBottom:28,padding:"16px 20px"}}>
+        <div style={{fontWeight:700,fontSize:15,color:C.text,marginBottom:16}}>📦 Package Popularity</div>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {pkgStats.map(pkg=>(
+            <div key={pkg.name}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+                <div>
+                  <span style={{fontSize:13,fontWeight:700,color:C.navy}}>{pkg.name}</span>
+                  <span style={{fontSize:12,color:C.muted,marginLeft:8}}>{pkg.count} booking{pkg.count!==1?"s":""}</span>
+                </div>
+                <span style={{fontSize:13,fontWeight:700,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(pkg.revenue)}</span>
+              </div>
+              <div style={{height:10,background:C.border,borderRadius:6,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${Math.round((pkg.count/maxPkgCount)*100)}%`,
+                  background:pkg.name==="Mini Figure Experience"?C.navy:pkg.name==="Guestbook Frame Experience"?C.amber:C.green,
+                  borderRadius:6,transition:"width 0.4s ease",minWidth:pkg.count>0?8:0}} />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:14,paddingTop:12,borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <span style={{fontSize:12,color:C.muted}}>Total active bookings</span>
+          <span style={{fontSize:15,fontWeight:800,color:C.navy}}>{bookings.filter(b=>b.status!=="Cancelled").length}</span>
         </div>
       </Card>
 
@@ -733,33 +782,54 @@ function Dashboard({ bookings, financials, setPage, isMobile }) {
 
 // ── Bookings ─────────────────────────────────────────────────────────────────
 function emptyBooking() {
-  return {client:"",phone:"",service:"",staff:"",datetime:"",duration:240,status:"Reserved",notes:"",price:"",venue:"",eventType:"",pax:"",theme:"",paymentStatus:"Pending Balance",balance:"",reservationFee:""};
+  return {client:"",phone:"",services:[],staffIds:[],datetime:"",duration:240,status:"Reserved",notes:"",price:"",venue:"",eventType:"",pax:"",theme:"",paymentStatus:"Pending Balance",balance:"",reservationFee:""};
 }
 
 function BookingForm({ form, setForm, staffList, services, onSave, onCancel, title }) {
-  const price   = +form.price   || 0;
+  const selectedServices = Array.isArray(form.services) ? form.services : (form.service ? [form.service] : []);
+  const selectedStaffIds = Array.isArray(form.staffIds)  ? form.staffIds  : (form.staff  ? [form.staff]  : []);
   const resFee  = +form.reservationFee || 0;
   const balance = +form.balance || 0;
-  const amtPaid = price - balance;
 
-  // Get available pax tiers for the selected service
-  const paxOptions = SEED_PACKAGE_RATES
-    .filter(p => p.name === form.service)
-    .map(p => p.pax)
-    .sort((a,b) => a - b);
+  // Auto-sum price from all selected packages at the chosen pax
+  function calcAutoPrice(svcList, pax) {
+    return svcList.reduce((sum, svc) => {
+      const match = SEED_PACKAGE_RATES.find(p => p.name === svc && p.pax === +pax);
+      return sum + (match ? match.rate : 0);
+    }, 0);
+  }
 
-  // Auto-fill price when service or pax changes
-  function handleServiceChange(newService) {
-    const pkgs = SEED_PACKAGE_RATES.filter(p => p.name === newService).sort((a,b)=>a.pax-b.pax);
-    const match = pkgs.find(p => p.pax === +form.pax) || pkgs[0];
-    setForm({...form, service: newService, pax: match ? match.pax : "", price: match ? match.rate : ""});
+  const autoPrice = calcAutoPrice(selectedServices, form.pax);
+  const price     = autoPrice > 0 ? autoPrice : (+form.price || 0);
+  const amtPaid   = price - balance;
+
+  // Pax options = union of tiers available across all selected services
+  const paxOptions = [...new Set(
+    SEED_PACKAGE_RATES
+      .filter(p => selectedServices.includes(p.name))
+      .map(p => p.pax)
+  )].sort((a,b) => a - b);
+
+  function toggleService(svc) {
+    const next = selectedServices.includes(svc)
+      ? selectedServices.filter(s => s !== svc)
+      : [...selectedServices, svc];
+    const newAutoPrice = calcAutoPrice(next, form.pax);
+    const newBal = Math.max(0, newAutoPrice - resFee);
+    setForm({...form, services: next, service: next[0]||"", price: newAutoPrice||form.price, balance: newAutoPrice ? newBal : form.balance});
+  }
+
+  function toggleStaff(id) {
+    const next = selectedStaffIds.includes(id)
+      ? selectedStaffIds.filter(s => s !== id)
+      : [...selectedStaffIds, id];
+    setForm({...form, staffIds: next, staff: next[0]||""});
   }
 
   function handlePaxChange(newPax) {
-    const match = SEED_PACKAGE_RATES.find(p => p.name === form.service && p.pax === +newPax);
-    const newPrice = match ? match.rate : form.price;
-    const newBal   = Math.max(0, newPrice - (+form.reservationFee || 0));
-    setForm({...form, pax: newPax, price: newPrice, balance: newBal});
+    const newAutoPrice = calcAutoPrice(selectedServices, newPax);
+    const newBal = Math.max(0, newAutoPrice - resFee);
+    setForm({...form, pax: newPax, price: newAutoPrice || form.price, balance: newAutoPrice ? newBal : form.balance});
   }
 
   return (
@@ -769,10 +839,27 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
         <Input label="Phone" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} />
         <Input label="Venue" value={form.venue||""} onChange={e=>setForm({...form,venue:e.target.value})} />
 
-        <Select label="Package / Service" value={form.service} onChange={e=>handleServiceChange(e.target.value)}>
-          <option value="">Select...</option>
-          {services.map(s=><option key={s}>{s}</option>)}
-        </Select>
+        <div style={{gridColumn:"span 2"}}>
+          <label style={{fontSize:12,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6}}>Package / Service (select all that apply)</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {services.map(s=>(
+              <label key={s} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",
+                background:selectedServices.includes(s)?C.navy+"18":C.bg,
+                border:`1.5px solid ${selectedServices.includes(s)?C.navy:C.border}`,
+                borderRadius:8,padding:"6px 12px",fontSize:13,fontWeight:selectedServices.includes(s)?700:400,
+                color:selectedServices.includes(s)?C.navy:C.text,userSelect:"none"}}>
+                <input type="checkbox" checked={selectedServices.includes(s)} onChange={()=>toggleService(s)}
+                  style={{accentColor:C.navy,width:14,height:14}} />
+                {s}
+              </label>
+            ))}
+          </div>
+          {selectedServices.length>1&&(
+            <div style={{fontSize:11,color:C.muted,marginTop:4}}>
+              {selectedServices.length} packages selected — prices will be summed
+            </div>
+          )}
+        </div>
         <Select label="Event Type" value={form.eventType||""} onChange={e=>setForm({...form,eventType:e.target.value})}>
           <option value="">Select...</option>
           {["Birthday","Baptism","Wedding","Corporate","Church Event","Other"].map(s=><option key={s}>{s}</option>)}
@@ -780,13 +867,13 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
 
         <Input label="Date & Time" type="datetime-local" value={form.datetime} onChange={e=>setForm({...form,datetime:e.target.value})} />
 
-        {/* Pax dropdown — shows tiers if service selected, else free input */}
+        {/* Pax dropdown — tiers from all selected services */}
         {paxOptions.length > 0 ? (
           <Select label="No. of Pax" value={form.pax||""} onChange={e=>handlePaxChange(e.target.value)}>
             <option value="">Select pax...</option>
             {paxOptions.map(p=>{
-              const pkg = SEED_PACKAGE_RATES.find(x=>x.name===form.service&&x.pax===p);
-              return <option key={p} value={p}>{p} pax — ₱{pkg?.rate?.toLocaleString()}</option>;
+              const total = calcAutoPrice(selectedServices, p);
+              return <option key={p} value={p}>{p} pax{total>0?` — ₱${total.toLocaleString()}`:""}</option>;
             })}
           </Select>
         ) : (
@@ -794,10 +881,22 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
         )}
 
         <Input label="Theme" value={form.theme||""} onChange={e=>setForm({...form,theme:e.target.value})} />
-        <Select label="Staff" value={form.staff} onChange={e=>setForm({...form,staff:e.target.value})}>
-          <option value="">Select...</option>
-          {staffList.filter(s=>s.status==="Active").map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-        </Select>
+        <div style={{gridColumn:"span 2"}}>
+          <label style={{fontSize:12,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6}}>Staff (select all assigned)</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+            {staffList.filter(s=>s.status==="Active").map(s=>(
+              <label key={s.id} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",
+                background:selectedStaffIds.includes(s.id)?C.amber+"18":C.bg,
+                border:`1.5px solid ${selectedStaffIds.includes(s.id)?C.amber:C.border}`,
+                borderRadius:8,padding:"6px 12px",fontSize:13,fontWeight:selectedStaffIds.includes(s.id)?700:400,
+                color:selectedStaffIds.includes(s.id)?C.amber:C.text,userSelect:"none"}}>
+                <input type="checkbox" checked={selectedStaffIds.includes(s.id)} onChange={()=>toggleStaff(s.id)}
+                  style={{accentColor:C.amber,width:14,height:14}} />
+                {s.name}
+              </label>
+            ))}
+          </div>
+        </div>
         <Select label="Booking Status" value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>
           {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s}>{s}</option>)}
         </Select>
@@ -810,8 +909,8 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
               <label style={{fontSize:12,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:4}}>Package Price (₱)</label>
               <input type="number" value={form.price} onChange={e=>setForm({...form,price:+e.target.value,balance:Math.max(0,(+e.target.value)-(+form.reservationFee||0))})}
                 style={{width:"100%",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:14,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none",boxSizing:"border-box"}} />
-              {form.service && paxOptions.length > 0 && (
-                <div style={{fontSize:11,color:C.muted,marginTop:3}}>Auto-filled from package</div>
+              {autoPrice > 0 && (
+                <div style={{fontSize:11,color:C.muted,marginTop:3}}>Auto-summed from {selectedServices.length} package{selectedServices.length!==1?"s":""}</div>
               )}
             </div>
             <Input label="Reservation Fee Paid (₱)" type="number" value={form.reservationFee||""}
@@ -879,7 +978,10 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
     const oldBooking = isNew ? null : bookings.find(b=>b.id===modal);
     const newBooking = isNew ? {...form, id:uid()} : {...form};
     const bId        = newBooking.id || modal;
-    const staffName  = staffList.find(s=>s.id===newBooking.staff)?.name||"";
+    const staffIds   = Array.isArray(newBooking.staffIds) ? newBooking.staffIds : (newBooking.staff ? [newBooking.staff] : []);
+    const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
+    const svcList    = Array.isArray(newBooking.services) ? newBooking.services : (newBooking.service ? [newBooking.service] : []);
+    const svcLabel   = svcList.join(" + ") || newBooking.service || "";
     const eventDate  = newBooking.datetime ? new Date(newBooking.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
     const resFee     = +newBooking.reservationFee || 0;
     const fullPrice  = +newBooking.price || 0;
@@ -894,13 +996,13 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           // Update existing entry to full price
           updated = updated.map(f=>
             f.type==="Income"&&f.bookingId===bId
-              ? {...f, amount:fullPrice, description:`${newBooking.service} – ${newBooking.client}${staffName?" ("+staffName+")":""}`, date:eventDate}
+              ? {...f, amount:fullPrice, description:`${svcLabel} – ${newBooking.client}${staffNames?" ("+staffNames+")":""}`, date:eventDate}
               : f
           );
         } else {
           // New completed booking income entry
           updated.push({id:uid(),date:eventDate,type:"Income",category:"Service Revenue",bookingId:bId,
-            amount:fullPrice,description:`${newBooking.service} – ${newBooking.client}${staffName?" ("+staffName+")":""}`,method:"Cash"});
+            amount:fullPrice,description:`${svcLabel} – ${newBooking.client}${staffNames?" ("+staffNames+")":""}`,method:"Cash"});
         }
       } else if((newBooking.status==="Reserved"||newBooking.status==="Inquiry") && resFee > 0) {
         // Reserved with reservation fee: add/update income for the fee paid
@@ -908,13 +1010,13 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           // Update existing reservation fee entry
           updated = updated.map(f=>
             f.type==="Income"&&f.bookingId===bId
-              ? {...f, amount:resFee, description:`Reservation Fee – ${newBooking.service} (${newBooking.client})`, date:eventDate}
+              ? {...f, amount:resFee, description:`Reservation Fee – ${svcLabel} (${newBooking.client})`, date:eventDate}
               : f
           );
         } else {
           // New reservation fee income entry
           updated.push({id:uid(),date:eventDate,type:"Income",category:"Reservation Fee",bookingId:bId,
-            amount:resFee,description:`Reservation Fee – ${newBooking.service} (${newBooking.client})`,method:"Cash"});
+            amount:resFee,description:`Reservation Fee – ${svcLabel} (${newBooking.client})`,method:"Cash"});
         }
       }
       return updated;
@@ -1046,16 +1148,58 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                     <div style={{fontWeight:700,fontSize:14}}>{b.client}</div>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>setBookings(prev=>prev.map(x=>x.id===b.id?{...x,status:v}:x))); }}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{
+  setBookings(prev=>prev.map(x=>x.id===b.id?{...x,status:v}:x));
+  // Auto-update income when status changes
+  if(v==="Completed") {
+    const fullPrice = +b.price||0;
+    const staffName = staffList.find(s=>s.id===b.staff)?.name||"";
+    const eventDate = b.datetime?new Date(b.datetime).toISOString().slice(0,10):new Date().toISOString().slice(0,10);
+    setFinancials(prev=>{
+      const exists = prev.find(f=>f.type==="Income"&&f.bookingId===b.id);
+      if(exists) return prev.map(f=>f.type==="Income"&&f.bookingId===b.id
+        ?{...f,amount:fullPrice,description:`${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} – ${b.client}`,date:eventDate}:f);
+      return [...prev,{id:uid(),date:eventDate,type:"Income",category:"Service Revenue",bookingId:b.id,
+        amount:fullPrice,description:`${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} – ${b.client}`,method:"Cash"}];
+    });
+  } else if((v==="Reserved"||v==="Inquiry")&&(+b.reservationFee>0)) {
+    const resFee   = +b.reservationFee||0;
+    const eventDate = b.datetime?new Date(b.datetime).toISOString().slice(0,10):new Date().toISOString().slice(0,10);
+    setFinancials(prev=>{
+      const exists = prev.find(f=>f.type==="Income"&&f.bookingId===b.id);
+      if(exists) return prev.map(f=>f.type==="Income"&&f.bookingId===b.id
+        ?{...f,amount:resFee,description:`Reservation Fee – ${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} (${b.client})`,date:eventDate}:f);
+      return [...prev,{id:uid(),date:eventDate,type:"Income",category:"Reservation Fee",bookingId:b.id,
+        amount:resFee,description:`Reservation Fee – ${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} (${b.client})`,method:"Cash"}];
+    });
+  }
+}); }}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit",appearance:"auto"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
                   </div>
-                  <div style={{fontSize:12,color:C.muted,marginTop:4}}>{b.service}</div>
+                  <div style={{fontSize:12,color:C.muted,marginTop:4}}>
+                    {(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")}
+                  </div>
                   <div style={{fontSize:12,color:C.muted,marginTop:4}}>📅 {b.datetime?new Date(b.datetime).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}):"—"}{b.venue&&` · 📍 ${b.venue}`}</div>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:8}}>
-                    <span style={{fontSize:13,fontWeight:700,color:C.navy,fontVariantNumeric:"tabular-nums"}}>{currency(b.price)}</span>
-                    {b.balance>0&&<span style={{fontSize:11,color:C.amber,fontWeight:600}}>Bal: {currency(b.balance)}</span>}
+                  {/* ── Payment columns ── */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginTop:10,background:C.bg,borderRadius:8,padding:"8px 10px"}}>
+                    <div style={{textAlign:"center"}}>
+                      <div style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2}}>Total</div>
+                      <div style={{fontSize:13,fontWeight:800,color:C.navy,fontVariantNumeric:"tabular-nums"}}>{currency(b.price)}</div>
+                    </div>
+                    <div style={{textAlign:"center",borderLeft:`1px solid ${C.border}`,borderRight:`1px solid ${C.border}`}}>
+                      <div style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2}}>Paid</div>
+                      <div style={{fontSize:13,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>
+                        {currency((+b.price||0)-(+b.balance||0))}
+                      </div>
+                    </div>
+                    <div style={{textAlign:"center"}}>
+                      <div style={{fontSize:10,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:2}}>Balance</div>
+                      <div style={{fontSize:13,fontWeight:800,color:+b.balance>0?C.amber:C.green,fontVariantNumeric:"tabular-nums"}}>
+                        {+b.balance>0 ? currency(b.balance) : <span style={{fontSize:11}}>✓ Paid</span>}
+                      </div>
+                    </div>
                   </div>
                   <div style={{display:"flex",gap:6,marginTop:10}}>
                     <Btn variant="outline" size="sm" onClick={()=>openEdit(b)}>Edit</Btn>
@@ -1076,27 +1220,58 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
             <thead>
               <tr style={{background:C.bg}}>
-                {["Client","Package","Event Date","Venue","Pax","Price","Status",""].map(h=>(
+                {["Client","Package","Event Date","Venue","Pax","Price","Paid","Balance","Status",""].map(h=>(
                   <th key={h} style={{padding:"11px 16px",textAlign:"left",fontWeight:600,color:C.muted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.04em",borderBottom:`1px solid ${C.border}`}}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length===0&&<tr><td colSpan={8} style={{padding:32,textAlign:"center",color:C.muted}}>No bookings found.</td></tr>}
+              {filtered.length===0&&<tr><td colSpan={10} style={{padding:32,textAlign:"center",color:C.muted}}>No bookings found.</td></tr>}
               {filtered.map(b=>(
                 <tr key={b.id} style={{borderBottom:`1px solid ${C.border}`}}>
                   <td style={{padding:"12px 16px"}}>
                     <div style={{fontWeight:600}}>{b.client}</div>
                     <div style={{fontSize:12,color:C.muted}}>{b.phone||""}</div>
                   </td>
-                  <td style={{padding:"12px 16px"}}>{b.service}</td>
+                  <td style={{padding:"12px 16px"}}>{(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")}</td>
                   <td style={{padding:"12px 16px",color:C.muted,whiteSpace:"nowrap"}}>{formatDT(b.datetime)}</td>
                   <td style={{padding:"12px 16px",color:C.muted,fontSize:12}}>{b.venue||"—"}</td>
                   <td style={{padding:"12px 16px",color:C.muted}}>{b.pax?b.pax+" pax":"—"}</td>
-                  <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums"}}>{currency(b.price)}</td>
+                  <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums",fontWeight:700,color:C.navy}}>{currency(b.price)}</td>
+                  <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums",fontWeight:700,color:C.green}}>
+                    {currency((+b.price||0)-(+b.balance||0))}
+                  </td>
+                  <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums",fontWeight:700,color:+b.balance>0?C.amber:C.green}}>
+                    {+b.balance>0 ? currency(b.balance) : <span style={{fontSize:11,color:C.green}}>✓ Fully Paid</span>}
+                  </td>
                   <td style={{padding:"12px 16px"}}>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>setBookings(prev=>prev.map(x=>x.id===b.id?{...x,status:v}:x))); }}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{
+  setBookings(prev=>prev.map(x=>x.id===b.id?{...x,status:v}:x));
+  // Auto-update income when status changes
+  if(v==="Completed") {
+    const fullPrice = +b.price||0;
+    const staffName = staffList.find(s=>s.id===b.staff)?.name||"";
+    const eventDate = b.datetime?new Date(b.datetime).toISOString().slice(0,10):new Date().toISOString().slice(0,10);
+    setFinancials(prev=>{
+      const exists = prev.find(f=>f.type==="Income"&&f.bookingId===b.id);
+      if(exists) return prev.map(f=>f.type==="Income"&&f.bookingId===b.id
+        ?{...f,amount:fullPrice,description:`${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} – ${b.client}`,date:eventDate}:f);
+      return [...prev,{id:uid(),date:eventDate,type:"Income",category:"Service Revenue",bookingId:b.id,
+        amount:fullPrice,description:`${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} – ${b.client}`,method:"Cash"}];
+    });
+  } else if((v==="Reserved"||v==="Inquiry")&&(+b.reservationFee>0)) {
+    const resFee   = +b.reservationFee||0;
+    const eventDate = b.datetime?new Date(b.datetime).toISOString().slice(0,10):new Date().toISOString().slice(0,10);
+    setFinancials(prev=>{
+      const exists = prev.find(f=>f.type==="Income"&&f.bookingId===b.id);
+      if(exists) return prev.map(f=>f.type==="Income"&&f.bookingId===b.id
+        ?{...f,amount:resFee,description:`Reservation Fee – ${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} (${b.client})`,date:eventDate}:f);
+      return [...prev,{id:uid(),date:eventDate,type:"Income",category:"Reservation Fee",bookingId:b.id,
+        amount:resFee,description:`Reservation Fee – ${(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")} (${b.client})`,method:"Cash"}];
+    });
+  }
+}); }}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit",appearance:"auto"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1518,7 +1693,6 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
           <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
           {financialsPwd&&finGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Unlocked</span>}
         </div>
-        <Btn variant="danger" size="sm" onClick={resetFromBookings}>↺ Rebuild Income</Btn>
       </div>
 
       {/* Summary cards */}
