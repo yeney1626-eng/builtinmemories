@@ -507,7 +507,7 @@ function Dashboard({ bookings, financials, setPage, isMobile }) {
   }
 
   // YTD financials
-  const ytdFin     = financials.filter(f=>new Date(f.date).getFullYear()===currentYear);
+  const ytdFin     = financials.filter(f=>{ try { const yr=new Date(f.date).getFullYear(); return !isNaN(yr)&&yr===currentYear; } catch{return false;} });
   const ytdIncome  = ytdFin.filter(f=>f.type==="Income" ).reduce((s,f)=>s+f.amount,0);
   const ytdExpense = ytdFin.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
   const ytdNet     = ytdIncome - ytdExpense;
@@ -975,7 +975,19 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     const svcLabel = svcList.join(" + ") || b.service || "";
     const staffIds = Array.isArray(b.staffIds)&&b.staffIds.length>0 ? b.staffIds : (b.staff?[b.staff]:[]);
     const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
-    const eventDate  = b.datetime ? new Date(b.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+    // Robust date parsing — handles ISO, datetime-local, and formatted strings
+    const eventDate = (() => {
+      if(!b.datetime) return new Date().toISOString().slice(0,10);
+      try {
+        // Already ISO date-only
+        if(/^\d{4}-\d{2}-\d{2}$/.test(String(b.datetime))) return String(b.datetime);
+        // datetime-local format: 2026-06-26T14:16
+        if(/^\d{4}-\d{2}-\d{2}T/.test(String(b.datetime))) return String(b.datetime).slice(0,10);
+        const d = new Date(b.datetime);
+        if(!isNaN(d.getTime())) return d.toISOString().slice(0,10);
+        return new Date().toISOString().slice(0,10);
+      } catch { return new Date().toISOString().slice(0,10); }
+    })();
 
     // Determine what income entry to create/update
     let incomeAmount = 0;
@@ -1205,10 +1217,19 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
                   </div>
-                  <div style={{fontSize:12,color:C.muted,marginTop:4}}>
+                  <div style={{fontSize:12,color:C.navy,fontWeight:600,marginTop:4}}>
                     {(Array.isArray(b.services)&&b.services.length>0?b.services:[b.service]).filter(Boolean).join(" + ")}
                   </div>
-                  <div style={{fontSize:12,color:C.muted,marginTop:4}}>📅 {b.datetime?new Date(b.datetime).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}):"—"}{b.venue&&` · 📍 ${b.venue}`}</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}}>
+                    {b.phone&&<span style={{fontSize:11,color:C.muted}}>📞 {b.phone}</span>}
+                    {b.pax&&<span style={{fontSize:11,color:C.muted}}>👥 {b.pax} pax</span>}
+                    {b.eventType&&<span style={{fontSize:11,color:C.muted}}>🎉 {b.eventType}</span>}
+                  </div>
+                  <div style={{fontSize:12,color:C.muted,marginTop:3}}>📅 {b.datetime?new Date(b.datetime).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric",hour:"2-digit",minute:"2-digit"}):"—"}</div>
+                  {b.venue&&<div style={{fontSize:12,color:C.muted,marginTop:2}}>📍 {b.venue}</div>}
+                  {b.paymentStatus&&<div style={{marginTop:4}}><span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:12,
+                    background:b.paymentStatus==="Paid"?C.green+"18":b.paymentStatus==="Pending Balance"?C.amber+"22":C.muted+"18",
+                    color:b.paymentStatus==="Paid"?C.green:b.paymentStatus==="Pending Balance"?C.amber:C.muted}}>{b.paymentStatus}</span></div>}
                   {/* ── Payment columns ── */}
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginTop:10,background:C.bg,borderRadius:8,padding:"8px 10px"}}>
                     <div style={{textAlign:"center"}}>
@@ -1536,38 +1557,6 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
   }
   function remove(id) { finGate.request(()=>{ if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }); }
 
-  function resetFromBookings() {
-    if(!window.confirm("This will update income from Completed bookings. Manually added income entries will be kept. Continue?")) return;
-    setFinancials(prev=>{
-      const expenses     = prev.filter(f=>f.type==="Expense");
-      const manualIncome = prev.filter(f=>f.type==="Income" && !f.bookingId);
-      // Build a map of existing booking-linked income by bookingId
-      const existingByBookingId = new Map(
-        prev.filter(f=>f.type==="Income" && f.bookingId).map(f=>[f.bookingId, f])
-      );
-      // For each completed booking: update existing entry or create new one (preserving ID)
-      const completedBookingIds = new Set(bookings.filter(b=>b.status==="Completed").map(b=>b.id));
-      const updatedIncome = bookings.filter(b=>b.status==="Completed").map(b=>{
-        const existing:any = existingByBookingId.get(b.id);
-        return {
-          // Reuse existing ID so no duplicates — only create new ID if truly new entry
-          id:   existing ? existing.id : uid(),
-          date: existing ? existing.date : new Date(b.datetime).toISOString().slice(0,10),
-          type: "Income",
-          category: "Service Revenue",
-          bookingId: b.id,
-          amount: +b.price||0,
-          description: `${b.service} – ${b.client}${b.venue?" @ "+b.venue:""}`,
-          method: existing ? (existing as any).method : "Cash",
-        };
-      });
-      // Keep booking-income for bookings that are no longer Completed (don't delete history)
-      const nonCompletedBookingIncome = prev.filter(
-        f=>f.type==="Income" && f.bookingId && !completedBookingIds.has(f.bookingId)
-      );
-      return [...expenses, ...manualIncome, ...nonCompletedBookingIncome, ...updatedIncome];
-    });
-  }
 
   // ── Excel helpers ──────────────────────────────────────────────────────────
   function exportIncomeExcel() {
