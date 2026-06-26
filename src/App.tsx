@@ -296,7 +296,9 @@ async function gsFetch(action: string, data?: object) {
 
 function useGoogleSync(
   bookings: any[], financials: any[], staffList: any[], services: any[],
-  setBookings: Function, setFinancials: Function, setStaffList: Function, setServices: Function
+  settings: any,
+  setBookings: Function, setFinancials: Function, setStaffList: Function, setServices: Function,
+  setSettings: Function
 ) {
   const saveTimer   = useRef<any>(null);
   const loadStarted = useRef(false);  // prevents double-load
@@ -330,7 +332,8 @@ function useGoogleSync(
             return Array.from(map.values());
           });
         }
-        if (d.services && Array.isArray(d.services)) setServices(d.services);
+        if (d.services  && Array.isArray(d.services))  setServices(d.services);
+        if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
       }
       // Only enable auto-save AFTER load is done — prevents overwriting sheet with empty seed data
       loadDone.current = true;
@@ -344,10 +347,10 @@ function useGoogleSync(
     if (!loadDone.current) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      gsFetch("save", { bookings, financials, staffList, services }).catch(() => {});
+      gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
     }, 3000);
     return () => clearTimeout(saveTimer.current);
-  }, [bookings, financials, staffList, services]);
+  }, [bookings, financials, staffList, services, settings]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
@@ -363,6 +366,7 @@ function useGoogleSync(
       }
       if (d.staffList && Array.isArray(d.staffList)) setStaffList(d.staffList);
       if (d.services  && Array.isArray(d.services))  setServices(d.services);
+      if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
     } else {
       alert("Nothing found in the backup sheet yet.");
     }
@@ -1100,40 +1104,59 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
 
     // Handle cancellation income/expense logic
     if(newBooking.status === "Cancelled") {
-      const amtPaid = (+newBooking.price||0) - (+newBooking.balance||0);
+      const amtPaid  = (+newBooking.price||0) - (+newBooking.balance||0);
       const svcLabel = (Array.isArray(newBooking.services)&&newBooking.services.length>0?newBooking.services:[newBooking.service]).filter(Boolean).join(" + ");
-      if(newBooking.cancelType === "non-refundable" && amtPaid > 0) {
-        // Keep/update income entry — note it as non-refundable cancellation
-        setFinancials(prev => {
-          const existIdx = prev.findIndex(f=>f.type==="Income"&&f.bookingId===bId);
-          const entry = {
-            id: existIdx>=0 ? prev[existIdx].id : uid(),
-            type:"Income", date:eventDate, category:"Non-Refundable Cancellation",
-            bookingId:bId, amount:amtPaid, method:"Cash",
-            description:`Non-Refundable – ${svcLabel} (${newBooking.client})`,
+
+      setFinancials(prev => {
+        let updated = [...prev];
+
+        // ── Always keep/create income if any payment was made ─────────────
+        // Both non-refundable AND refundable had real money received — keep it in income
+        if(amtPaid > 0) {
+          const existIncomeIdx = updated.findIndex(f=>f.type==="Income"&&f.bookingId===bId);
+          const incomeEntry = {
+            id:          existIncomeIdx>=0 ? updated[existIncomeIdx].id : uid(),
+            type:        "Income",
+            date:        eventDate,
+            category:    newBooking.cancelType==="non-refundable" ? "Non-Refundable Cancellation" : "Cancellation Payment",
+            bookingId:   bId,
+            amount:      amtPaid,
+            method:      existIncomeIdx>=0 ? updated[existIncomeIdx].method : "Cash",
+            description: newBooking.cancelType==="non-refundable"
+              ? `Non-Refundable – ${svcLabel} (${newBooking.client})`
+              : `Payment Received – ${svcLabel} (${newBooking.client})`,
           };
-          if(existIdx>=0) return prev.map((f,i)=>i===existIdx?entry:f);
-          return [...prev, entry];
-        });
-      } else if(newBooking.cancelType === "refunded") {
-        const refundAmt = +newBooking.refundAmount || 0;
-        setFinancials(prev => {
-          // Remove any existing income for this booking
-          let updated = prev.filter(f=>!(f.type==="Income"&&f.bookingId===bId));
-          // Add refund as expense
-          if(refundAmt > 0) {
-            updated.push({
-              id:uid(), type:"Expense", date:eventDate, category:"Refund",
-              bookingId:bId, amount:refundAmt, method:"Cash",
-              description:`Refund – ${svcLabel} (${newBooking.client})`,
-            });
-          }
-          return updated;
-        });
-      } else {
-        // No cancel type chosen — just remove income for this booking
-        setFinancials(prev => prev.filter(f=>!(f.type==="Income"&&f.bookingId===bId)));
-      }
+          if(existIncomeIdx>=0) updated[existIncomeIdx] = incomeEntry;
+          else updated.push(incomeEntry);
+        } else {
+          // No payment was ever made — remove any stale income entry
+          updated = updated.filter(f=>!(f.type==="Income"&&f.bookingId===bId));
+        }
+
+        // ── Refunded: add/update a Refund expense to reconcile ────────────
+        // Income stays (money was received), expense records the money given back
+        const existRefundIdx = updated.findIndex(f=>f.type==="Expense"&&f.category==="Refund"&&f.bookingId===bId);
+        if(newBooking.cancelType==="refunded") {
+          const refundAmt = +newBooking.refundAmount || amtPaid; // default to full amount if not specified
+          const refundEntry = {
+            id:          existRefundIdx>=0 ? updated[existRefundIdx].id : uid(),
+            type:        "Expense",
+            date:        eventDate,
+            category:    "Refund",
+            bookingId:   bId,
+            amount:      refundAmt,
+            method:      "Cash",
+            description: `Refund – ${svcLabel} (${newBooking.client})`,
+          };
+          if(existRefundIdx>=0) updated[existRefundIdx] = refundEntry;
+          else updated.push(refundEntry);
+        } else {
+          // Non-refundable or no type — remove any existing refund expense
+          updated = updated.filter(f=>!(f.type==="Expense"&&f.category==="Refund"&&f.bookingId===bId));
+        }
+
+        return updated;
+      });
     } else {
       // Sync income for this booking using shared helper
       setFinancials(prev => syncIncomeForBookings([newBooking], prev, staffList));
@@ -2164,7 +2187,17 @@ export default function App() {
   const isMobile = useIsMobile();
 
   // Google Sheets silent sync — auto-loads on login, auto-saves on change
-  const { restore } = useGoogleSync(bookings, financials, staffList, services, setBookings, setFinancials, setStaffList, setServices);
+  // Settings bundle — everything that should persist across devices
+  const settings = { monthlyQuota, passwords };
+  function setSettings(s: any) {
+    if(s.monthlyQuota !== undefined) setMonthlyQuota(+s.monthlyQuota || 50000);
+    if(s.passwords    !== undefined) setPasswords(s.passwords);
+  }
+
+  const { restore } = useGoogleSync(
+    bookings, financials, staffList, services, settings,
+    setBookings, setFinancials, setStaffList, setServices, setSettings
+  );
 
   const themeObj = THEMES[theme] || THEMES.light;
   // Update module-level C synchronously so all components see it
