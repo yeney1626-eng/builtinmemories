@@ -353,29 +353,16 @@ function useGoogleSync(
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
     if (result.ok && result.data) {
       const d = result.data;
-      // Merge by ID — sheet record overwrites app record if same ID, new IDs are added, no duplicates
-      if (d.bookings && Array.isArray(d.bookings)) {
-        setBookings(prev => {
-          const map = new Map(prev.map((b:any) => [b.id, b]));
-          d.bookings.forEach((b:any) => map.set(b.id, b));
-          return Array.from(map.values());
-        });
-      }
+      const mergedBookings = (() => {
+        if(!d.bookings || !Array.isArray(d.bookings)) return null;
+        return d.bookings; // full replace on manual restore
+      })();
+      if (mergedBookings) setBookings(mergedBookings);
       if (d.financials && Array.isArray(d.financials)) {
-        setFinancials(prev => {
-          const map = new Map(prev.map((f:any) => [f.id, f]));
-          d.financials.forEach((f:any) => map.set(f.id, f));
-          return Array.from(map.values());
-        });
+        setFinancials(d.financials); // full replace on manual restore
       }
-      if (d.staffList && Array.isArray(d.staffList)) {
-        setStaffList(prev => {
-          const map = new Map(prev.map((s:any) => [s.id, s]));
-          d.staffList.forEach((s:any) => map.set(s.id, s));
-          return Array.from(map.values());
-        });
-      }
-      if (d.services && Array.isArray(d.services)) setServices(d.services);
+      if (d.staffList && Array.isArray(d.staffList)) setStaffList(d.staffList);
+      if (d.services  && Array.isArray(d.services))  setServices(d.services);
     } else {
       alert("Nothing found in the backup sheet yet.");
     }
@@ -625,9 +612,10 @@ function Dashboard({ bookings, financials, setPage, isMobile }) {
             <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkReserved.length} booking{bkReserved.length!==1?"s":""} · paid so far</div>
           </div>
           <div style={{padding:"12px 14px",borderRadius:8,background:C.navy+"12",borderLeft:`3px solid ${C.navy}`}}>
-            <div style={{fontSize:11,fontWeight:700,color:C.navy,textTransform:"uppercase",marginBottom:4}}>Inquiry</div>
-            <div style={{fontSize:17,fontWeight:800,color:C.navy,fontVariantNumeric:"tabular-nums"}}>{currency(incInquiry)}</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkInquiry.length} booking{bkInquiry.length!==1?"s":""} · paid so far</div>
+            <div style={{fontSize:11,fontWeight:700,color:"#9B59B6",textTransform:"uppercase",marginBottom:4}}>Inquiry</div>
+            <div style={{fontSize:17,fontWeight:800,color:"#9B59B6",fontVariantNumeric:"tabular-nums"}}>{bkInquiry.length}</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>bookings · {currency(bkInquiry.reduce((s,b)=>s+(+b.price||0),0))} potential</div>
+            <div style={{fontSize:10,color:C.muted,fontStyle:"italic",marginTop:1}}>not included in income</div>
           </div>
           <div style={{padding:"12px 14px",borderRadius:8,background:C.redBg,borderLeft:`3px solid ${C.red}`}}>
             <div style={{fontSize:11,fontWeight:700,color:C.red,textTransform:"uppercase",marginBottom:4}}>Cancelled</div>
@@ -1058,7 +1046,7 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
   }).sort((a,b)=>new Date(b.datetime).getTime()-new Date(a.datetime).getTime());
 
   function openNew()   { setForm(emptyBooking()); setModal("new"); }
-  function openEdit(b) { bookingGate.request(()=>{ setForm({...b}); setModal(b.id); }); }
+  function openEdit(b) { setForm({...b}); setModal(b.id); }
 
   function save() {
     if(!form.client||!form.service||!form.datetime) return alert("Client, service, and date are required.");
@@ -1082,10 +1070,8 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
   }
 
   function doDelete(id) {
-    bookingGate.request(()=>{
-      if(!window.confirm("Delete this booking?")) return;
-      setBookings(prev=>prev.filter(b=>b.id!==id));
-    });
+    if(!window.confirm("Delete this booking?")) return;
+      setBookings(prev=>prev.filter(b=>b.id!==id));;
   }
 
 
@@ -1178,11 +1164,10 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
 
   return (
     <div>
-      {bookingGate.Gate}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:10}}>
         <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Bookings</h2>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          {bookingGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Edit unlocked</span>}
+          
           <Btn variant="outline" size="sm" onClick={exportBookingsExcel}>⬇ Excel</Btn>
           <Btn variant="outline" size="sm" onClick={()=>importBookRef.current.click()}>⬆ Import Excel</Btn>
           <input ref={importBookRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={importBookingsExcel} />
@@ -1209,12 +1194,11 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
                     <div style={{fontWeight:700,fontSize:14}}>{b.client}</div>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{
+                      onChange={e=>{ const v=e.target.value;
   const updatedB = {...b, status:v};
   setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x));
-  // Sync income via shared helper
   setFinancials(prev => syncIncomeForBookings([updatedB], prev, staffList));
-}); }}
+}}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit",appearance:"auto"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1296,12 +1280,11 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                   </td>
                   <td style={{padding:"12px 16px"}}>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{
+                      onChange={e=>{ const v=e.target.value;
   const updatedB = {...b, status:v};
   setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x));
-  // Sync income via shared helper
   setFinancials(prev => syncIncomeForBookings([updatedB], prev, staffList));
-}); }}
+}}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit",appearance:"auto"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1557,7 +1540,7 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
     setFinancials(prev=>[{...form,id:uid(),amount:+form.amount},...prev]);
     setModal(false);
   }
-  function remove(id) { finGate.request(()=>{ if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }); }
+  function remove(id) { if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }
 
 
   // ── Excel helpers ──────────────────────────────────────────────────────────
@@ -1684,12 +1667,11 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
 
   return (
     <div style={{paddingBottom:isMobile?16:0}}>
-      {finGate.Gate}
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
-          {financialsPwd&&finGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Unlocked</span>}
+          
         </div>
       </div>
 
@@ -1726,7 +1708,7 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
       {/* Tab toolbar */}
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
         <Btn variant={tab==="Income"?"success":"danger"} size="sm"
-          onClick={()=>finGate.request(()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); })}>
+          onClick={()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); }}>
           + Add {tab}
         </Btn>
         {tab==="Income" ? (<>
@@ -1799,13 +1781,13 @@ function Packages({ isMobile }) {
   const [packageRates, setPackageRates] = useState(SEED_PACKAGE_RATES);
   const [modal, setModal] = useState(null); // null | "new" | row id
   const [form, setForm]   = useState(emptyPackageRow());
-  const pkgGate = usePasswordGate("packages");
+  const pkgGate = { request: (cb:any)=>cb(), Gate: null, unlocked: true };
 
   const pkgNames:string[] = [...new Set<string>(packageRates.map((r:any)=>String(r.name)))];
 
-  function openAdd(name) { pkgGate.request(()=>{ setForm(emptyPackageRow(name)); setModal("new"); }); }
-  function openEdit(r)   { pkgGate.request(()=>{ setForm({...r}); setModal(r.id); }); }
-  function doDelete(id)  { pkgGate.request(()=>{ if(!window.confirm("Delete this rate?")) return; setPackageRates(prev=>prev.filter(r=>r.id!==id)); }); }
+  function openAdd(name) { setForm(emptyPackageRow(name)); setModal("new"); }
+  function openEdit(r)   { setForm({...r}); setModal(r.id); }
+  function doDelete(id)  { if(!window.confirm("Delete this rate?")) return; setPackageRates(prev=>prev.filter(r=>r.id!==id)); }
 
   function save() {
     if(!form.name||!form.pax||!form.rate) return alert("Name, Pax and Rate are required.");
@@ -1824,7 +1806,7 @@ function Packages({ isMobile }) {
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {pkgGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Edit unlocked</span>}
-          <Btn variant="amber" size="sm" onClick={()=>pkgGate.request(()=>{ setForm(emptyPackageRow(pkgNames[0]||"")); setModal("new"); })}>+ Add Rate</Btn>
+          <Btn variant="amber" size="sm" onClick={()=>{ setForm(emptyPackageRow(pkgNames[0]||"")); setModal("new"); }}>+ Add Rate</Btn>
         </div>
       </div>
 
@@ -2103,7 +2085,7 @@ export default function App() {
   const [services,   setServices]   = useState(SEED_SERVICES);
   const [theme,      setTheme]      = useState("light");
   // Feature passwords — null means no password required
-  const [passwords, setPasswords]   = useState({ bookings: "bookings", financials: null });
+  const [passwords, setPasswords]   = useState({ bookings: null, financials: null });
   const isMobile = useIsMobile();
 
   // Google Sheets silent sync — auto-loads on login, auto-saves on change
