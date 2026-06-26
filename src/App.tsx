@@ -478,15 +478,14 @@ function BottomNav({ page, setPage, theme, setTheme }) {
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({ bookings, financials, setPage, isMobile }) {
+function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setMonthlyQuota }) {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonthIdx = now.getMonth();
 
-  // Monthly quota state — persisted in component, editable inline
-  const [monthlyQuota, setMonthlyQuota] = useState(50000);
+  // Monthly quota — lifted to App so it persists across navigation
   const [editingQuota, setEditingQuota] = useState(false);
-  const [quotaInput, setQuotaInput]     = useState("50000");
+  const [quotaInput, setQuotaInput]     = useState(String(monthlyQuota));
 
   // Selected month for monthly view (default = current month)
   const [selectedMonth, setSelectedMonth] = useState(`${currentYear}-${currentMonthIdx}`);
@@ -888,9 +887,46 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
             ))}
           </div>
         </div>
-        <Select label="Booking Status" value={form.status} onChange={e=>setForm({...form,status:e.target.value})}>
+        <Select label="Booking Status" value={form.status} onChange={e=>setForm({...form,status:e.target.value,cancelType:e.target.value!=="Cancelled"?"":form.cancelType,refundAmount:e.target.value!=="Cancelled"?"":form.refundAmount})}>
           {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s}>{s}</option>)}
         </Select>
+
+        {/* ── Cancellation options ──────────────────────────────────── */}
+        {form.status==="Cancelled"&&(
+          <div style={{gridColumn:"span 2",background:"#FBEAE8",borderRadius:10,padding:"14px 16px",border:"1.5px solid #C0392B"}}>
+            <div style={{fontWeight:700,fontSize:13,color:"#C0392B",marginBottom:12,textTransform:"uppercase",letterSpacing:"0.05em"}}>🚫 Cancellation Details</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div style={{gridColumn:"span 2"}}>
+                <label style={{fontSize:12,fontWeight:600,color:"#C0392B",textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6}}>Cancellation Type</label>
+                <div style={{display:"flex",gap:10}}>
+                  {["non-refundable","refunded"].map(t=>(
+                    <label key={t} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",
+                      background:form.cancelType===t?"#C0392B":"#fff",
+                      border:`1.5px solid #C0392B`,borderRadius:8,padding:"8px 14px",
+                      fontSize:13,fontWeight:600,color:form.cancelType===t?"#fff":"#C0392B",userSelect:"none"}}>
+                      <input type="radio" name="cancelType" value={t} checked={form.cancelType===t}
+                        onChange={()=>setForm({...form,cancelType:t,refundAmount:t==="non-refundable"?"":form.refundAmount})}
+                        style={{accentColor:"#C0392B"}} />
+                      {t==="non-refundable"?"💰 Non-Refundable":"↩ Refunded"}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {form.cancelType==="non-refundable"&&(
+                <div style={{gridColumn:"span 2",background:"#fff3cd",borderRadius:8,padding:"10px 12px",fontSize:12,color:"#856404"}}>
+                  ✅ Payment of <strong>₱{((+form.price||0)-(+form.balance||0)).toLocaleString()}</strong> will remain in income as non-refundable.
+                </div>
+              )}
+              {form.cancelType==="refunded"&&(
+                <div style={{gridColumn:"span 2"}}>
+                  <Input label="Refund Amount (₱)" type="number" value={form.refundAmount||""}
+                    onChange={e=>setForm({...form,refundAmount:+e.target.value})} />
+                  <div style={{fontSize:11,color:"#C0392B",marginTop:4}}>Refund will be added as an expense entry.</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ── Payment Section ─────────────────────────────────────────────── */}
         <div style={{gridColumn:"span 2",background:C.bg,borderRadius:10,padding:"14px 16px",border:`1px solid ${C.border}`}}>
@@ -957,7 +993,7 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
   let financials = [...prevFinancials];
 
   bookingsList.forEach(b => {
-    if(b.status === "Cancelled") return;
+    if(b.status === "Cancelled") return; // cancellation handled in save() directly
 
     const price    = +b.price || 0;
     const balance  = +b.balance || 0;
@@ -1062,8 +1098,46 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
     const resFee     = +newBooking.reservationFee || 0;
     const fullPrice  = +newBooking.price || 0;
 
-    // Sync income for this booking using shared helper
-    setFinancials(prev => syncIncomeForBookings([newBooking], prev, staffList));
+    // Handle cancellation income/expense logic
+    if(newBooking.status === "Cancelled") {
+      const amtPaid = (+newBooking.price||0) - (+newBooking.balance||0);
+      const svcLabel = (Array.isArray(newBooking.services)&&newBooking.services.length>0?newBooking.services:[newBooking.service]).filter(Boolean).join(" + ");
+      if(newBooking.cancelType === "non-refundable" && amtPaid > 0) {
+        // Keep/update income entry — note it as non-refundable cancellation
+        setFinancials(prev => {
+          const existIdx = prev.findIndex(f=>f.type==="Income"&&f.bookingId===bId);
+          const entry = {
+            id: existIdx>=0 ? prev[existIdx].id : uid(),
+            type:"Income", date:eventDate, category:"Non-Refundable Cancellation",
+            bookingId:bId, amount:amtPaid, method:"Cash",
+            description:`Non-Refundable – ${svcLabel} (${newBooking.client})`,
+          };
+          if(existIdx>=0) return prev.map((f,i)=>i===existIdx?entry:f);
+          return [...prev, entry];
+        });
+      } else if(newBooking.cancelType === "refunded") {
+        const refundAmt = +newBooking.refundAmount || 0;
+        setFinancials(prev => {
+          // Remove any existing income for this booking
+          let updated = prev.filter(f=>!(f.type==="Income"&&f.bookingId===bId));
+          // Add refund as expense
+          if(refundAmt > 0) {
+            updated.push({
+              id:uid(), type:"Expense", date:eventDate, category:"Refund",
+              bookingId:bId, amount:refundAmt, method:"Cash",
+              description:`Refund – ${svcLabel} (${newBooking.client})`,
+            });
+          }
+          return updated;
+        });
+      } else {
+        // No cancel type chosen — just remove income for this booking
+        setFinancials(prev => prev.filter(f=>!(f.type==="Income"&&f.bookingId===bId)));
+      }
+    } else {
+      // Sync income for this booking using shared helper
+      setFinancials(prev => syncIncomeForBookings([newBooking], prev, staffList));
+    }
 
     setBookings(prev=>isNew?[newBooking,...prev]:prev.map(b=>b.id===modal?newBooking:b));
     setModal(null);
@@ -2079,6 +2153,7 @@ function Login({ onAuth }) {
 export default function App() {
   const [authed,     setAuthed]     = useState(false);
   const [page,       setPage]       = useState("dashboard");
+  const [monthlyQuota, setMonthlyQuota] = useState(50000);
   const [bookings,   setBookings]   = useState(SEED_BOOKINGS);
   const [staffList,  setStaffList]  = useState(SEED_STAFF);
   const [financials, setFinancials] = useState(SEED_FINANCIALS);
@@ -2113,7 +2188,7 @@ export default function App() {
         </div>
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",width:isMobile?"100%":undefined,minWidth:0}}>
-        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPage} isMobile={isMobile} />}
+        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPage} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} />}
         {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
