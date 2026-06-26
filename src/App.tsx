@@ -300,11 +300,12 @@ function useGoogleSync(
   setBookings: Function, setFinancials: Function, setStaffList: Function, setServices: Function,
   setSettings: Function
 ) {
-  const saveTimer   = useRef<any>(null);
-  const loadStarted = useRef(false);  // prevents double-load
-  const loadDone    = useRef(false);  // auto-save only fires AFTER load resolves
+  const saveTimer    = useRef<any>(null);
+  const loadStarted  = useRef(false);
+  // useState (not useRef) so the save useEffect re-evaluates when load completes
+  const [loadDone, setLoadDone] = useState(false);
 
-  // Auto-load once on mount — loadDone flips only after the fetch resolves
+  // Auto-load once on mount
   useEffect(() => {
     if (loadStarted.current) return;
     loadStarted.current = true;
@@ -332,25 +333,25 @@ function useGoogleSync(
             return Array.from(map.values());
           });
         }
-        if (d.services  && Array.isArray(d.services))  setServices(d.services);
-        if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
+        if (d.services && Array.isArray(d.services))  setServices(d.services);
+        if (d.settings && typeof d.settings === "object") setSettings(d.settings);
       }
-      // Only enable auto-save AFTER load is done — prevents overwriting sheet with empty seed data
-      loadDone.current = true;
+      // setLoadDone(true) triggers re-render → save useEffect now runs with real data
+      setLoadDone(true);
     }).catch(() => {
-      loadDone.current = true; // still enable save even if load fails
+      setLoadDone(true); // allow saves even if load fails
     });
   }, []);
 
-  // Auto-save 3 s after any data change — only fires once loadDone is true
+  // Auto-save — only after load resolves (loadDone is in dep array so effect re-runs when it flips)
   useEffect(() => {
-    if (!loadDone.current) return;
+    if (!loadDone) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
     }, 3000);
     return () => clearTimeout(saveTimer.current);
-  }, [bookings, financials, staffList, services, settings]);
+  }, [loadDone, bookings, financials, staffList, services, settings]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
@@ -1027,18 +1028,28 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     let description = "";
 
     if(b.status === "Completed") {
-      // Completed → full price (always update to full)
+      // Completed → full price
       if(price === 0) return;
       incomeAmount = price;
       description  = `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
       category     = "Service Revenue";
     } else if(resFee > 0) {
-      // Has an explicit reservation fee paid — only record that amount
+      // Explicit reservation fee entered — record that amount
       incomeAmount = resFee;
       description  = `Reservation Fee – ${svcLabel} (${b.client})`;
       category     = "Reservation Fee";
+    } else if(amtPaid > 0 && balance > 0) {
+      // Partial payment (imported booking with paid amount but no explicit resFee field)
+      incomeAmount = amtPaid;
+      description  = `Reservation Fee – ${svcLabel} (${b.client})`;
+      category     = "Reservation Fee";
+    } else if(price > 0 && balance === 0) {
+      // Fully paid reservation (no balance remaining)
+      incomeAmount = price;
+      description  = `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
+      category     = "Service Revenue";
     } else {
-      // No explicit payment recorded — skip, don't create income
+      // No payment recorded — skip
       return;
     }
 
@@ -1190,17 +1201,31 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           client:        String(r["Client Name"] || ""),
           phone:         String(r["Phone"] || ""),
           service:       String(r["Package / Service"] || ""),
+          services:      (r["Package / Service"]||"").split("+").map((s:any)=>s.trim()).filter(Boolean),
           eventType:     String(r["Event Type"] || ""),
           venue:         String(r["Venue"] || ""),
           datetime:      r["Event Date"] ? (() => { try { const d = new Date(r["Event Date"] + (r["Event Time"] ? " " + r["Event Time"] : "")); return isNaN(d.getTime())?"":`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; } catch { return ""; }})() : "",
           pax:           +r["No. of Pax"] || "",
           theme:         String(r["Theme"] || ""),
           staff:         "",
-          price:         +r["Package Price"] || 0,
-          balance:       +r["Balance"] || 0,
+          staffIds:      [],
+          price:         +r["Package Price (₱)"] || +r["Package Price"] || 0,
+          balance:       +r["Balance (₱)"]        || +r["Balance"]        || 0,
+          reservationFee:+r["Reservation Fee (₱)"] || +r["Reservation Fee"] || (() => {
+            // Derive reservationFee from Paid column if present
+            const paid = +r["Paid"] || +r["Amount Paid (₱)"] || +r["Amount Paid"] || 0;
+            const price = +r["Package Price (₱)"] || +r["Package Price"] || 0;
+            const bal   = +r["Balance (₱)"]        || +r["Balance"]        || 0;
+            const derivedPaid = paid || (price - bal);
+            // Only treat as reservation fee if status is not Completed
+            const status = String(r["Booking Status"] || "Reserved");
+            return (derivedPaid > 0 && status !== "Completed") ? derivedPaid : 0;
+          })(),
           paymentStatus: String(r["Payment Status"] || "Pending Balance"),
           status:        String(r["Booking Status"] || "Reserved"),
           notes:         String(r["Notes"] || ""),
+          cancelType:    "",
+          refundAmount:  "",
           duration:      240,
         }));
         if(window.confirm(`Import ${imported.length} bookings? Duplicates will be updated, existing unique bookings kept.`)) {
