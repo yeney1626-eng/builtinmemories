@@ -298,17 +298,17 @@ function useGoogleSync(
   bookings: any[], financials: any[], staffList: any[], services: any[],
   setBookings: Function, setFinancials: Function, setStaffList: Function, setServices: Function
 ) {
-  const saveTimer  = useRef<any>(null);
-  const didLoad    = useRef(false);
+  const saveTimer   = useRef<any>(null);
+  const loadStarted = useRef(false);  // prevents double-load
+  const loadDone    = useRef(false);  // auto-save only fires AFTER load resolves
 
-  // Auto-load once on mount (restores data from sheet on login)
+  // Auto-load once on mount — loadDone flips only after the fetch resolves
   useEffect(() => {
-    if (didLoad.current) return;
-    didLoad.current = true;
+    if (loadStarted.current) return;
+    loadStarted.current = true;
     gsFetch("load", {}).then(result => {
       if (result.ok && result.data) {
         const d = result.data;
-        // Merge by ID on initial load — prevents duplicates if app already has local state
         if (d.bookings && Array.isArray(d.bookings)) {
           setBookings(prev => {
             const map = new Map(prev.map((b:any) => [b.id, b]));
@@ -332,12 +332,16 @@ function useGoogleSync(
         }
         if (d.services && Array.isArray(d.services)) setServices(d.services);
       }
-    }).catch(() => {}); // silent — no UI feedback
+      // Only enable auto-save AFTER load is done — prevents overwriting sheet with empty seed data
+      loadDone.current = true;
+    }).catch(() => {
+      loadDone.current = true; // still enable save even if load fails
+    });
   }, []);
 
-  // Auto-save 3 s after any data change (debounced, silent)
+  // Auto-save 3 s after any data change — only fires once loadDone is true
   useEffect(() => {
-    if (!didLoad.current) return;
+    if (!loadDone.current) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       gsFetch("save", { bookings, financials, staffList, services }).catch(() => {});
@@ -995,25 +999,19 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     let description = "";
 
     if(b.status === "Completed") {
-      if(price === 0) return; // no price, skip
+      // Completed → full price (always update to full)
+      if(price === 0) return;
       incomeAmount = price;
       description  = `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
       category     = "Service Revenue";
     } else if(resFee > 0) {
+      // Has an explicit reservation fee paid — only record that amount
       incomeAmount = resFee;
       description  = `Reservation Fee – ${svcLabel} (${b.client})`;
       category     = "Reservation Fee";
-    } else if(price > 0 && balance === 0) {
-      // fully paid reservation
-      incomeAmount = price;
-      description  = `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
-      category     = "Service Revenue";
-    } else if(amtPaid > 0) {
-      incomeAmount = amtPaid;
-      description  = `Partial Payment – ${svcLabel} (${b.client})`;
-      category     = "Reservation Fee";
     } else {
-      return; // nothing paid yet, skip
+      // No explicit payment recorded — skip, don't create income
+      return;
     }
 
     const existIdx = financials.findIndex(f => f.type==="Income" && f.bookingId===b.id);
@@ -1122,10 +1120,14 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           notes:         String(r["Notes"] || ""),
           duration:      240,
         }));
-        if(window.confirm(`Import ${imported.length} bookings? This will REPLACE all existing bookings.`)) {
-          setBookings(imported);
-          // Auto-generate income for all imported bookings with payment
-          setFinancials(prev => syncIncomeForBookings(imported, prev.filter(f=>f.type==="Expense"), staffList));
+        if(window.confirm(`Import ${imported.length} bookings? Duplicates will be updated, existing unique bookings kept.`)) {
+          setBookings(prev => {
+            const map = new Map(prev.map((b:any) => [b.id, b]));
+            imported.forEach((b:any) => map.set(b.id, b)); // overwrite duplicates, add new
+            return Array.from(map.values());
+          });
+          // Sync income for all imported bookings
+          setFinancials(prev => syncIncomeForBookings(imported, prev, staffList));
         }
       } catch(err) { alert("Failed to read Excel file. Make sure it matches the exported format."); }
     };
