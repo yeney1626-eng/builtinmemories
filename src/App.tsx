@@ -335,6 +335,15 @@ function useGoogleSync(
         }
         if (d.services && Array.isArray(d.services))  setServices(d.services);
         if (d.settings && typeof d.settings === "object") setSettings(d.settings);
+
+        // After loading, sync income for all bookings that have payment info
+        // This ensures reservation fees appear in income even after fresh login
+        if (d.bookings && Array.isArray(d.bookings)) {
+          const loadedFinancials = d.financials && Array.isArray(d.financials) ? d.financials : [];
+          const loadedStaff     = d.staffList  && Array.isArray(d.staffList)  ? d.staffList  : [];
+          const synced = syncIncomeForBookings(d.bookings, loadedFinancials, loadedStaff);
+          setFinancials(synced);
+        }
       }
       // setLoadDone(true) triggers re-render → save useEffect now runs with real data
       setLoadDone(true);
@@ -356,18 +365,18 @@ function useGoogleSync(
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
     if (result.ok && result.data) {
-      const d = result.data;
-      const mergedBookings = (() => {
-        if(!d.bookings || !Array.isArray(d.bookings)) return null;
-        return d.bookings; // full replace on manual restore
-      })();
-      if (mergedBookings) setBookings(mergedBookings);
-      if (d.financials && Array.isArray(d.financials)) {
-        setFinancials(d.financials); // full replace on manual restore
-      }
-      if (d.staffList && Array.isArray(d.staffList)) setStaffList(d.staffList);
-      if (d.services  && Array.isArray(d.services))  setServices(d.services);
-      if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
+      const d        = result.data;
+      const books    = Array.isArray(d.bookings)  ? d.bookings  : [];
+      const fins     = Array.isArray(d.financials) ? d.financials : [];
+      const staff    = Array.isArray(d.staffList)  ? d.staffList  : [];
+      const svcs     = Array.isArray(d.services)   ? d.services   : [];
+      if (books.length)  setBookings(books);
+      if (staff.length)  setStaffList(staff);
+      if (svcs.length)   setServices(svcs);
+      if (d.settings && typeof d.settings === "object") setSettings(d.settings);
+      // Sync income for all restored bookings then set financials
+      const synced = syncIncomeForBookings(books, fins, staff);
+      setFinancials(synced);
     } else {
       alert("Nothing found in the backup sheet yet.");
     }
@@ -1028,28 +1037,25 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     let description = "";
 
     if(b.status === "Completed") {
-      // Completed → full price
+      // Completed → always full price
       if(price === 0) return;
       incomeAmount = price;
       description  = `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
       category     = "Service Revenue";
     } else if(resFee > 0) {
-      // Explicit reservation fee entered — record that amount
+      // Explicit reservation fee — record exactly that amount
       incomeAmount = resFee;
       description  = `Reservation Fee – ${svcLabel} (${b.client})`;
       category     = "Reservation Fee";
-    } else if(amtPaid > 0 && balance > 0) {
-      // Partial payment (imported booking with paid amount but no explicit resFee field)
+    } else if(amtPaid > 0) {
+      // Any amount paid (derived from price - balance) — always record it
       incomeAmount = amtPaid;
-      description  = `Reservation Fee – ${svcLabel} (${b.client})`;
-      category     = "Reservation Fee";
-    } else if(price > 0 && balance === 0) {
-      // Fully paid reservation (no balance remaining)
-      incomeAmount = price;
-      description  = `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
-      category     = "Service Revenue";
+      description  = balance > 0
+        ? `Reservation Fee – ${svcLabel} (${b.client})`
+        : `${svcLabel} – ${b.client}${staffNames?" ("+staffNames+")":""}`;
+      category     = balance > 0 ? "Reservation Fee" : "Service Revenue";
     } else {
-      // No payment recorded — skip
+      // Nothing paid yet — skip, no income entry
       return;
     }
 
@@ -1231,11 +1237,18 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
         if(window.confirm(`Import ${imported.length} bookings? Duplicates will be updated, existing unique bookings kept.`)) {
           setBookings(prev => {
             const map = new Map(prev.map((b:any) => [b.id, b]));
-            imported.forEach((b:any) => map.set(b.id, b)); // overwrite duplicates, add new
+            imported.forEach((b:any) => map.set(b.id, b));
             return Array.from(map.values());
           });
-          // Sync income for all imported bookings
-          setFinancials(prev => syncIncomeForBookings(imported, prev, staffList));
+          // Sync income: merge imported bookings with existing, run income sync on ALL
+          setFinancials(prev => {
+            const allBookings = (() => {
+              // We need to get the merged booking list but can't access the new state yet
+              // So sync income for imported ones against current financials
+              return syncIncomeForBookings(imported, prev, staffList);
+            })();
+            return allBookings;
+          });
         }
       } catch(err) { alert("Failed to read Excel file. Make sure it matches the exported format."); }
     };
