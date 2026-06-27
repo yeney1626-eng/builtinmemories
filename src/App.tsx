@@ -551,13 +551,15 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   }
 
   // Period definitions
+  // YTD = Jan → current month only (actual performance so far)
+  // Annual = all 12 months (includes future months, useful for projections)
   const periodDefs:any = {
-    ytd:    { label:"YTD",         months: Array.from({length:currentMonthIdx+1},(_,i)=>i) },
-    q1:     { label:"Q1 (Jan–Mar)",months:[0,1,2] },
-    q2:     { label:"Q2 (Apr–Jun)",months:[3,4,5] },
-    q3:     { label:"Q3 (Jul–Sep)",months:[6,7,8] },
-    q4:     { label:"Q4 (Oct–Dec)",months:[9,10,11] },
-    annual: { label:"Full Year",   months:[0,1,2,3,4,5,6,7,8,9,10,11] },
+    ytd:    { label:`Jan–${MONTHS[currentMonthIdx]} (YTD)`, months: Array.from({length:currentMonthIdx+1},(_,i)=>i) },
+    q1:     { label:"Q1 (Jan–Mar)",   months:[0,1,2] },
+    q2:     { label:"Q2 (Apr–Jun)",   months:[3,4,5] },
+    q3:     { label:"Q3 (Jul–Sep)",   months:[6,7,8] },
+    q4:     { label:"Q4 (Oct–Dec)",   months:[9,10,11] },
+    annual: { label:"Full Year (All 12 Months)", months:[0,1,2,3,4,5,6,7,8,9,10,11] },
   };
 
   // Toggle a period in/out of the selection
@@ -1133,10 +1135,21 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
 //  • Reserved/Inquiry + balance === 0 + price > 0 → fully paid → income = full price
 //  • No payment info → skip (don't create income)
 function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
-  let financials = [...prevFinancials];
+  // Split: booking-linked income (managed here) vs everything else (never touched)
+  const bookingIds  = new Set(bookingsList.map(b=>b.id));
+  const otherEntries = prevFinancials.filter(f =>
+    // Keep: all expenses (manual or refund), and income NOT linked to these bookings
+    f.type === "Expense" || !f.bookingId || !bookingIds.has(f.bookingId)
+  );
+  // Start with only the booking-linked income entries from prev (will be updated/added below)
+  let bookingIncomeEntries = prevFinancials.filter(f =>
+    f.type === "Income" && f.bookingId && bookingIds.has(f.bookingId)
+  );
 
   bookingsList.forEach(b => {
-    if(b.status === "Cancelled") return; // cancellation handled in save() directly
+    // Cancelled — keep existing income as-is (managed by save() when status changes)
+    // Don't touch cancelled booking income entries here
+    if(b.status === "Cancelled") return;
 
     const price    = +b.price || 0;
     const balance  = +b.balance || 0;
@@ -1188,19 +1201,19 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
       return;
     }
 
-    const existIdx = financials.findIndex(f => f.type==="Income" && f.bookingId===b.id);
+    const existIdx = bookingIncomeEntries.findIndex(f => f.bookingId===b.id);
     if(existIdx >= 0) {
-      // Update existing entry
-      financials[existIdx] = {
-        ...financials[existIdx],
+      // Update existing booking income entry
+      bookingIncomeEntries[existIdx] = {
+        ...bookingIncomeEntries[existIdx],
         amount:      incomeAmount,
         description,
         category,
         date:        eventDate,
       };
     } else {
-      // Create new entry
-      financials.push({
+      // Create new booking income entry
+      bookingIncomeEntries.push({
         id:          uid(),
         type:        "Income",
         date:        eventDate,
@@ -1213,7 +1226,8 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     }
   });
 
-  return financials;
+  // Merge: all other entries (expenses, manual income) + updated booking income
+  return [...otherEntries, ...bookingIncomeEntries];
 }
 
 
