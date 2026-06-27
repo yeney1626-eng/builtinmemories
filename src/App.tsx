@@ -606,23 +606,36 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const monthExpense = monthFin.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
   const monthNet     = monthIncome - monthExpense;
 
-  // Booking-based income breakdown (by status rules)
+  // Booking status groups
   const bkCompleted = bookings.filter(b=>b.status==="Completed");
   const bkReserved  = bookings.filter(b=>b.status==="Reserved");
   const bkInquiry   = bookings.filter(b=>b.status==="Inquiry");
   const bkCancelled = bookings.filter(b=>b.status==="Cancelled");
-  const incCompleted = bkCompleted.reduce((s,b)=>s+bookingIncome(b),0);
-  const incReserved  = bkReserved.reduce((s,b)=>s+bookingIncome(b),0);
-  const incInquiry   = bkInquiry.reduce((s,b)=>s+bookingIncome(b),0);
-  const totalBookingIncome = incCompleted + incReserved + incInquiry;
+
+  // All values read directly from financials (single source of truth)
+  // Income linked to each booking group
+  const completedIds = new Set(bkCompleted.map(b=>b.id));
+  const reservedIds  = new Set(bkReserved.map(b=>b.id));
+  const cancelledIds = new Set(bkCancelled.map(b=>b.id));
+
+  const incCompleted = financials.filter(f=>f.type==="Income"&&f.bookingId&&completedIds.has(f.bookingId)).reduce((s,f)=>s+f.amount,0);
+  const incReserved  = financials.filter(f=>f.type==="Income"&&f.bookingId&&reservedIds.has(f.bookingId)).reduce((s,f)=>s+f.amount,0);
+  // Manual income (no bookingId) counted in completed total
+  const incManual    = financials.filter(f=>f.type==="Income"&&!f.bookingId).reduce((s,f)=>s+f.amount,0);
+  const totalBookingIncome = incCompleted + incReserved + incManual;
+
+  // Pending collections from booking balance fields
+  const pendingFromBookings = bookings
+    .filter(b=>b.status!=="Cancelled"&&+b.balance>0)
+    .reduce((s,b)=>s+(+b.balance||0),0);
 
   // Quota progress
   const quotaPct     = Math.min(100, Math.round((monthIncome / monthlyQuota) * 100));
   const quotaRemaining = Math.max(0, monthlyQuota - monthIncome);
   const quotaColor   = quotaPct >= 100 ? C.green : quotaPct >= 60 ? C.amber : C.red;
 
-  // Pending collections
-  const pendingBalance = bookings.filter(b=>b.paymentStatus==="Pending Balance"||b.paymentStatus==="Pending Reservation").reduce((s,b)=>s+(+b.balance||0),0);
+  // Pending collections (from booking balance fields)
+  const pendingBalance = pendingFromBookings;
 
   // Selected month booking count (non-cancelled)
   const monthBookings = bookings.filter(b=>b.status!=="Cancelled"&&new Date(b.datetime).getMonth()===selM&&new Date(b.datetime).getFullYear()===selY).length;
@@ -731,17 +744,17 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
 
       {/* ── Booking Income Breakdown ─────────────────────────────────────── */}
       <Card style={{marginBottom:28,padding:"16px 20px"}}>
-        <div style={{fontWeight:700,fontSize:15,color:C.text,marginBottom:14}}>Booking Income Breakdown</div>
+        <div style={{fontWeight:700,fontSize:15,color:C.text,marginBottom:14}}>Income Breakdown <span style={{fontSize:11,color:C.muted,fontWeight:400}}>(from all financial entries)</span></div>
         <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:12,marginBottom:14}}>
           <div style={{padding:"12px 14px",borderRadius:8,background:C.greenBg,borderLeft:`3px solid ${C.green}`}}>
             <div style={{fontSize:11,fontWeight:700,color:C.green,textTransform:"uppercase",marginBottom:4}}>Completed</div>
             <div style={{fontSize:17,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(incCompleted)}</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkCompleted.length} booking{bkCompleted.length!==1?"s":""} · 100%</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkCompleted.length} booking{bkCompleted.length!==1?"s":""}</div>
           </div>
           <div style={{padding:"12px 14px",borderRadius:8,background:C.amber+"15",borderLeft:`3px solid ${C.amber}`}}>
             <div style={{fontSize:11,fontWeight:700,color:C.amber,textTransform:"uppercase",marginBottom:4}}>Reserved</div>
             <div style={{fontSize:17,fontWeight:800,color:C.amber,fontVariantNumeric:"tabular-nums"}}>{currency(incReserved)}</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkReserved.length} booking{bkReserved.length!==1?"s":""} · paid so far</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkReserved.length} booking{bkReserved.length!==1?"s":""} · reservation fees</div>
           </div>
           <div style={{padding:"12px 14px",borderRadius:8,background:C.navy+"12",borderLeft:`3px solid ${C.navy}`}}>
             <div style={{fontSize:11,fontWeight:700,color:"#9B59B6",textTransform:"uppercase",marginBottom:4}}>Inquiry</div>
@@ -768,7 +781,12 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",paddingTop:12,borderTop:`1px solid ${C.border}`}}>
-          <span style={{fontSize:13,color:C.muted}}>Grand Total (all active bookings)</span>
+          <div>
+            <span style={{fontSize:13,color:C.muted}}>Total Income (all entries)</span>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+              Bookings: {currency(incCompleted+incReserved)} · Manual: {currency(incManual)}
+            </div>
+          </div>
           <span style={{fontSize:20,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(totalBookingIncome)}</span>
         </div>
       </Card>
@@ -819,7 +837,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
       {/* ── Monthly Quota vs Sales ─────────────────────────────────────── */}
       <Card style={{marginBottom:24,padding:"16px 20px"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
-          <div style={{fontWeight:700,fontSize:15,color:C.text}}>Monthly Sales Quota <span style={{fontSize:11,color:C.muted,fontWeight:400}}>({activePeriodLabel}: {currency(ytdIncome)})</span></div>
+          <div style={{fontWeight:700,fontSize:15,color:C.text}}>Monthly Sales Quota <span style={{fontSize:11,color:C.muted,fontWeight:400}}>{MONTHS[selM]}: {currency(monthIncome)} · {activePeriodLabel}: {currency(ytdIncome)}</span></div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             {editingQuota ? (
               <>
