@@ -336,13 +336,17 @@ function useGoogleSync(
         if (d.services && Array.isArray(d.services))  setServices(d.services);
         if (d.settings && typeof d.settings === "object") setSettings(d.settings);
 
-        // After loading, sync income for all bookings that have payment info
-        // This ensures reservation fees appear in income even after fresh login
+        // After loading, sync income — merge loaded financials with any local ones
         if (d.bookings && Array.isArray(d.bookings)) {
-          const loadedFinancials = d.financials && Array.isArray(d.financials) ? d.financials : [];
-          const loadedStaff     = d.staffList  && Array.isArray(d.staffList)  ? d.staffList  : [];
-          const synced = syncIncomeForBookings(d.bookings, loadedFinancials, loadedStaff);
-          setFinancials(synced);
+          const loadedFins  = d.financials && Array.isArray(d.financials) ? d.financials : [];
+          const loadedStaff = d.staffList  && Array.isArray(d.staffList)  ? d.staffList  : [];
+          setFinancials(prev => {
+            // Merge loaded financials with local (local wins for non-booking entries)
+            const map = new Map(prev.map((f:any) => [f.id, f]));
+            loadedFins.forEach((f:any) => map.set(f.id, f));
+            const merged = Array.from(map.values());
+            return syncIncomeForBookings(d.bookings, merged, loadedStaff);
+          });
         }
       }
       // setLoadDone(true) triggers re-render → save useEffect now runs with real data
@@ -375,8 +379,11 @@ function useGoogleSync(
       if (svcs.length)   setServices(svcs);
       if (d.settings && typeof d.settings === "object") setSettings(d.settings);
       // Sync income for all restored bookings then set financials
-      const synced = syncIncomeForBookings(books, fins, staff);
-      setFinancials(synced);
+      setFinancials(prev => {
+        const map = new Map(prev.map((f:any) => [f.id, f]));
+        fins.forEach((f:any) => map.set(f.id, f));
+        return syncIncomeForBookings(books, Array.from(map.values()), staff);
+      });
     } else {
       alert("Nothing found in the backup sheet yet.");
     }
@@ -394,8 +401,11 @@ function useGoogleSync(
       if(staff.length) setStaffList(staff);
       if(svcs.length)  setServices(svcs);
       if(d.settings && typeof d.settings === "object") setSettings(d.settings);
-      const synced = syncIncomeForBookings(books, fins, staff);
-      setFinancials(synced);
+      setFinancials(prev => {
+        const map = new Map(prev.map((f:any) => [f.id, f]));
+        fins.forEach((f:any) => map.set(f.id, f));
+        return syncIncomeForBookings(books, Array.from(map.values()), staff);
+      });
     }
   }
 
@@ -528,6 +538,9 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const [editingQuota, setEditingQuota] = useState(false);
   const [quotaInput, setQuotaInput]     = useState(String(monthlyQuota));
 
+  // YTD drill-down period selector
+  const [selectedPeriods, setSelectedPeriods] = useState<Set<string>>(new Set(["ytd"]));
+
   // Selected month for monthly view (default = current month)
   const [selectedMonth, setSelectedMonth] = useState(`${currentYear}-${currentMonthIdx}`);
 
@@ -537,8 +550,49 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
     monthOptions.push({ value:`${currentYear}-${m}`, label:`${MONTHS[m]} ${currentYear}` });
   }
 
-  // YTD financials
-  const ytdFin     = financials.filter(f=>{ try { const yr=new Date(f.date).getFullYear(); return !isNaN(yr)&&yr===currentYear; } catch{return false;} });
+  // Period definitions
+  const periodDefs:any = {
+    ytd:    { label:"YTD",         months: Array.from({length:currentMonthIdx+1},(_,i)=>i) },
+    q1:     { label:"Q1 (Jan–Mar)",months:[0,1,2] },
+    q2:     { label:"Q2 (Apr–Jun)",months:[3,4,5] },
+    q3:     { label:"Q3 (Jul–Sep)",months:[6,7,8] },
+    q4:     { label:"Q4 (Oct–Dec)",months:[9,10,11] },
+    annual: { label:"Full Year",   months:[0,1,2,3,4,5,6,7,8,9,10,11] },
+  };
+
+  // Toggle a period in/out of the selection
+  function togglePeriod(p: string) {
+    setSelectedPeriods(prev => {
+      const next = new Set(prev);
+      // "ytd" and "annual" are exclusive — selecting them clears quarters
+      if(p === "ytd" || p === "annual") {
+        return new Set([p]);
+      }
+      // Selecting a quarter clears ytd/annual
+      next.delete("ytd");
+      next.delete("annual");
+      if(next.has(p)) {
+        next.delete(p);
+        if(next.size === 0) next.add("ytd"); // fallback to YTD if all deselected
+      } else {
+        next.add(p);
+      }
+      return next;
+    });
+  }
+
+  // Compute combined months from all selected periods
+  const periodMonths = new Set<number>(
+    Array.from(selectedPeriods).flatMap(p => periodDefs[p]?.months || [])
+  );
+
+  // Label for display
+  const activePeriodLabel = selectedPeriods.size === 1
+    ? periodDefs[Array.from(selectedPeriods)[0]]?.label || ""
+    : Array.from(selectedPeriods).map(p=>periodDefs[p]?.label||p).join(" + ");
+
+  // YTD financials (filtered by selected periods)
+  const ytdFin     = financials.filter(f=>{ try { const d=new Date(f.date); return !isNaN(d.getTime())&&d.getFullYear()===currentYear&&periodMonths.has(d.getMonth()); } catch{return false;} });
   const ytdIncome  = ytdFin.filter(f=>f.type==="Income" ).reduce((s,f)=>s+f.amount,0);
   const ytdExpense = ytdFin.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
   const ytdNet     = ytdIncome - ytdExpense;
@@ -617,23 +671,59 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
     <div>
       <h2 style={{marginBottom:20,color:C.text,fontSize:22}}>Dashboard</h2>
 
-      {/* ── YTD Summary ───────────────────────────────────────────────── */}
-      <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:12}}>Year to Date — {currentYear}</div>
+      {/* ── YTD Summary with multi-select drill-down ──────────────── */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:10}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em"}}>{activePeriodLabel} — {currentYear}</div>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>
+          {/* YTD and Annual are exclusive single-selects */}
+          {["ytd","annual"].map(p=>(
+            <button key={p} onClick={()=>togglePeriod(p)} style={{
+              padding:"4px 10px",borderRadius:20,
+              border:`1.5px solid ${selectedPeriods.has(p)?C.navy:C.border}`,
+              background:selectedPeriods.has(p)?C.navy:"transparent",
+              color:selectedPeriods.has(p)?"#fff":C.muted,
+              fontSize:11,fontWeight:selectedPeriods.has(p)?700:500,
+              cursor:"pointer",fontFamily:"inherit",
+            }}>
+              {p==="ytd"?"YTD":"Annual"}
+            </button>
+          ))}
+          <span style={{fontSize:11,color:C.border}}>|</span>
+          {/* Q1-Q4 are multi-selectable */}
+          {["q1","q2","q3","q4"].map(p=>(
+            <button key={p} onClick={()=>togglePeriod(p)} style={{
+              padding:"4px 10px",borderRadius:20,
+              border:`1.5px solid ${selectedPeriods.has(p)?C.amber:C.border}`,
+              background:selectedPeriods.has(p)?C.amber:"transparent",
+              color:selectedPeriods.has(p)?"#fff":C.muted,
+              fontSize:11,fontWeight:selectedPeriods.has(p)?700:500,
+              cursor:"pointer",fontFamily:"inherit",
+            }}>
+              {p.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+      {selectedPeriods.size>1&&!selectedPeriods.has("annual")&&(
+        <div style={{fontSize:11,color:C.amber,marginBottom:8,fontWeight:600}}>
+          Showing: {activePeriodLabel}
+        </div>
+      )}
       <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(3,1fr)",gap:isMobile?10:14,marginBottom:28}}>
         <Card style={{borderLeft:`4px solid ${C.green}`}}>
-          <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",marginBottom:6}}>YTD Income</div>
+          <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Income</div>
           <div style={{fontSize:isMobile?20:26,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(ytdIncome)}</div>
-          <div style={{fontSize:12,color:C.muted,marginTop:4}}>Jan–{MONTHS[currentMonthIdx]} {currentYear}</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:4}}>{activePeriodLabel}</div>
         </Card>
         <Card style={{borderLeft:`4px solid ${C.red}`}}>
-          <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",marginBottom:6}}>YTD Expenses</div>
+          <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Expenses</div>
           <div style={{fontSize:isMobile?20:26,fontWeight:800,color:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(ytdExpense)}</div>
-          <div style={{fontSize:12,color:C.muted,marginTop:4}}>Jan–{MONTHS[currentMonthIdx]} {currentYear}</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:4}}>{activePeriodLabel}</div>
         </Card>
         <Card style={{borderLeft:`4px solid ${ytdNet>=0?C.green:C.red}`,gridColumn:isMobile?"span 2":"auto"}}>
-          <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",marginBottom:6}}>YTD Net Profit</div>
+          <div style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",marginBottom:6}}>Net Profit</div>
           <div style={{fontSize:isMobile?20:26,fontWeight:800,color:ytdNet>=0?C.green:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(ytdNet)}</div>
-          <div style={{fontSize:12,color:C.muted,marginTop:4}}>{ytdNet>=0?"Profitable year so far":"Loss so far"}</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:4}}>{ytdNet>=0?"Profitable":"Loss"} · {activePeriodLabel}</div>
         </Card>
       </div>
 
@@ -658,9 +748,21 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
             <div style={{fontSize:10,color:C.muted,fontStyle:"italic",marginTop:1}}>not included in income</div>
           </div>
           <div style={{padding:"12px 14px",borderRadius:8,background:C.redBg,borderLeft:`3px solid ${C.red}`}}>
-            <div style={{fontSize:11,fontWeight:700,color:C.red,textTransform:"uppercase",marginBottom:4}}>Cancelled</div>
-            <div style={{fontSize:17,fontWeight:800,color:C.muted,fontVariantNumeric:"tabular-nums"}}>₱0</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{bkCancelled.length} booking{bkCancelled.length!==1?"s":""} · excluded</div>
+            <div style={{fontSize:11,fontWeight:700,color:C.red,textTransform:"uppercase",marginBottom:4}}>Cancelled ({bkCancelled.length})</div>
+            {(()=>{
+              const nonRefundIncome = financials.filter(f=>f.type==="Income"&&f.category==="Non-Refundable Cancellation"&&bkCancelled.some(b=>b.id===f.bookingId)).reduce((s,f)=>s+f.amount,0);
+              const refundIncome    = financials.filter(f=>f.type==="Income"&&f.category==="Cancellation Payment"&&bkCancelled.some(b=>b.id===f.bookingId)).reduce((s,f)=>s+f.amount,0);
+              const refundExpense   = financials.filter(f=>f.type==="Expense"&&f.category==="Refund"&&bkCancelled.some(b=>b.id===f.bookingId)).reduce((s,f)=>s+f.amount,0);
+              return (
+                <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4}}>
+                  {nonRefundIncome>0&&<div style={{fontSize:11,fontWeight:700,color:C.green}}>💰 Non-Refundable: {currency(nonRefundIncome)}</div>}
+                  {refundIncome>0&&<div style={{fontSize:11,fontWeight:700,color:C.amber}}>💳 Paid (Refunded): {currency(refundIncome)}</div>}
+                  {refundExpense>0&&<div style={{fontSize:11,color:C.red}}>↩ Refunded Out: {currency(refundExpense)}</div>}
+                  {nonRefundIncome===0&&refundIncome===0&&<div style={{fontSize:11,color:C.muted}}>No payments recorded</div>}
+                  <div style={{fontSize:10,color:C.muted,fontStyle:"italic",marginTop:2}}>Refunded entries reconciled in expenses</div>
+                </div>
+              );
+            })()}
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",paddingTop:12,borderTop:`1px solid ${C.border}`}}>
@@ -715,7 +817,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
       {/* ── Monthly Quota vs Sales ─────────────────────────────────────── */}
       <Card style={{marginBottom:24,padding:"16px 20px"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:14}}>
-          <div style={{fontWeight:700,fontSize:15,color:C.text}}>Monthly Sales Quota</div>
+          <div style={{fontWeight:700,fontSize:15,color:C.text}}>Monthly Sales Quota <span style={{fontSize:11,color:C.muted,fontWeight:400}}>({activePeriodLabel}: {currency(ytdIncome)})</span></div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             {editingQuota ? (
               <>
