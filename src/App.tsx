@@ -382,7 +382,24 @@ function useGoogleSync(
     }
   }
 
-  return { restore };
+  async function manualRefresh() {
+    const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
+    if(result.ok && result.data) {
+      const d     = result.data;
+      const books = Array.isArray(d.bookings)  ? d.bookings  : [];
+      const fins  = Array.isArray(d.financials) ? d.financials : [];
+      const staff = Array.isArray(d.staffList)  ? d.staffList  : [];
+      const svcs  = Array.isArray(d.services)   ? d.services   : [];
+      if(books.length) setBookings(books);
+      if(staff.length) setStaffList(staff);
+      if(svcs.length)  setServices(svcs);
+      if(d.settings && typeof d.settings === "object") setSettings(d.settings);
+      const synced = syncIncomeForBookings(books, fins, staff);
+      setFinancials(synced);
+    }
+  }
+
+  return { restore, manualRefresh };
 }
 
 // ── Logo ──────────────────────────────────────────────────────────────────────
@@ -405,7 +422,7 @@ function useIsMobile() {
   return mobile;
 }
 
-function Sidebar({ page, setPage, theme, setTheme, bookings, financials, staffList }) {
+function Sidebar({ page, setPage, theme, setTheme, bookings, financials, staffList, onRefresh }) {
   return (
     <div style={{width:230,background:C.sidebarBg,display:"flex",flexDirection:"column",minHeight:"100vh",flexShrink:0}}>
       <div style={{padding:"24px 20px 16px",display:"flex",flexDirection:"column",alignItems:"center",borderBottom:`1px solid rgba(255,255,255,0.07)`}}>
@@ -435,13 +452,18 @@ function Sidebar({ page, setPage, theme, setTheme, bookings, financials, staffLi
         <div onClick={()=>exportFullBackup(bookings,financials,staffList)} style={{cursor:"pointer",padding:"7px 12px",borderRadius:7,background:"rgba(255,255,255,0.07)",color:C.sidebarText,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6,justifyContent:"center"}} title="Download full backup (Tip: Set up Google Sync in Settings for auto-backup)">
           ⬇ Backup Excel
         </div>
+        {onRefresh&&(
+          <div onClick={onRefresh} style={{cursor:"pointer",marginTop:6,padding:"7px 12px",borderRadius:7,background:"rgba(255,255,255,0.07)",color:C.sidebarText,fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
+            🔄 Refresh Data
+          </div>
+        )}
         <div style={{textAlign:"center",color:C.sidebarText,fontSize:10,opacity:0.35,marginTop:6}}>v2.0.0</div>
       </div>
     </div>
   );
 }
 
-function BottomNav({ page, setPage, theme, setTheme }) {
+function BottomNav({ page, setPage, theme, setTheme, onRefresh }) {
   const [showMore, setShowMore] = useState(false);
   const mainNav = [
     { id:"dashboard",  icon:"◈",  label:"Dashboard" },
@@ -472,6 +494,11 @@ function BottomNav({ page, setPage, theme, setTheme }) {
                 <span style={{fontSize:11,fontWeight:600}}>{n.label}</span>
               </div>
             ))}
+            <div onClick={()=>{if(onRefresh)onRefresh();setShowMore(false);}}
+              style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,padding:"10px 8px",borderRadius:10,cursor:"pointer",background:"rgba(255,255,255,0.06)",color:C.sidebarText}}>
+              <span style={{fontSize:22}}>🔄</span>
+              <span style={{fontSize:11,fontWeight:600}}>Refresh</span>
+            </div>
           </div>
         </div>
       )}
@@ -1184,8 +1211,9 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
   }
 
   function doDelete(id) {
-    if(!window.confirm("Delete this booking?")) return;
-      setBookings(prev=>prev.filter(b=>b.id!==id));;
+    if(!window.confirm("Delete this booking? This will also remove linked income and expense entries.")) return;
+    setBookings(prev => prev.filter(b => b.id !== id));
+    setFinancials(prev => prev.filter(f => f.bookingId !== id));
   }
 
 
@@ -2212,8 +2240,9 @@ function Login({ onAuth }) {
 
 // ── Root App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [authed,     setAuthed]     = useState(false);
-  const [page,       setPage]       = useState("dashboard");
+  // Persist auth + page across refreshes using sessionStorage
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem("bim_authed") === "1");
+  const [page,   setPage]   = useState(() => sessionStorage.getItem("bim_page") || "dashboard");
   const [monthlyQuota, setMonthlyQuota] = useState(50000);
   const [bookings,   setBookings]   = useState(SEED_BOOKINGS);
   const [staffList,  setStaffList]  = useState(SEED_STAFF);
@@ -2222,6 +2251,30 @@ export default function App() {
   const [theme,      setTheme]      = useState("light");
   // Feature passwords — null means no password required
   const [passwords, setPasswords]   = useState({ bookings: null, financials: null });
+  // Keep sessionStorage in sync
+  const setPagePersist = (p: string) => { setPage(p); sessionStorage.setItem("bim_page", p); };
+  const setAuthedPersist = (v: boolean) => { setAuthed(v); sessionStorage.setItem("bim_authed", v?"1":""); };
+
+  // ── Inactivity logout after 10 minutes ──────────────────────────────────
+  useEffect(() => {
+    let timer: any;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        setAuthedPersist(false);
+        sessionStorage.removeItem("bim_authed");
+        sessionStorage.removeItem("bim_page");
+      }, 10 * 60 * 1000); // 10 minutes
+    };
+    const events = ["mousemove","mousedown","keydown","touchstart","scroll","click"];
+    events.forEach(e => window.addEventListener(e, reset, { passive: true }));
+    reset(); // start timer
+    return () => {
+      clearTimeout(timer);
+      events.forEach(e => window.removeEventListener(e, reset));
+    };
+  }, [authed]);
+
   const isMobile = useIsMobile();
 
   // Google Sheets silent sync — auto-loads on login, auto-saves on change
@@ -2232,7 +2285,7 @@ export default function App() {
     if(s.passwords    !== undefined) setPasswords(s.passwords);
   }
 
-  const { restore } = useGoogleSync(
+  const { restore, manualRefresh } = useGoogleSync(
     bookings, financials, staffList, services, settings,
     setBookings, setFinancials, setStaffList, setServices, setSettings
   );
@@ -2243,14 +2296,14 @@ export default function App() {
 
   if(!authed) return (
     <ThemeContext.Provider value={themeObj}>
-      <Login onAuth={()=>setAuthed(true)} />
+      <Login onAuth={()=>setAuthedPersist(true)} />
     </ThemeContext.Provider>
   );
 
   return (
     <ThemeContext.Provider value={themeObj}>
     <div key={theme} style={{display:"flex",minHeight:"100vh",background:themeObj.bg,fontFamily:"Inter,system-ui,sans-serif",color:themeObj.text}}>
-      {!isMobile&&<Sidebar page={page} setPage={setPage} theme={theme} setTheme={setTheme} bookings={bookings} financials={financials} staffList={staffList} />}
+      {!isMobile&&<Sidebar page={page} setPage={setPagePersist} theme={theme} setTheme={setTheme} bookings={bookings} financials={financials} staffList={staffList} onRefresh={manualRefresh} />}
       {isMobile&&(
         <div style={{position:"fixed",top:0,left:0,right:0,zIndex:99,background:themeObj.sidebarBg,padding:"10px 16px 10px",display:"flex",alignItems:"center",gap:10,boxShadow:"0 2px 8px rgba(0,0,0,0.2)"}}>
           <img src={LOGO_URI} alt="logo" style={{width:32,height:32,borderRadius:"50%",objectFit:"cover",border:`1.5px solid ${themeObj.amber}`,background:"#fff",flexShrink:0}} />
@@ -2259,14 +2312,14 @@ export default function App() {
         </div>
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",width:isMobile?"100%":undefined,minWidth:0}}>
-        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPage} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} />}
+        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} />}
         {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
         {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} />}
       </main>
-      {isMobile&&<BottomNav page={page} setPage={setPage} theme={theme} setTheme={setTheme} />}
+      {isMobile&&<BottomNav page={page} setPage={setPagePersist} theme={theme} setTheme={setTheme} onRefresh={manualRefresh} />}
     </div>
     </ThemeContext.Provider>
   );
