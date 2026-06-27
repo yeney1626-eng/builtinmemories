@@ -601,7 +601,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
 
   // Selected month financials
   const [selY, selM] = selectedMonth.split("-").map(Number);
-  const monthFin     = financials.filter(f=>{const d=new Date(f.date);return d.getFullYear()===selY&&d.getMonth()===selM;});
+  const monthFin     = financials.filter(f=>{ try{const d=new Date(f.date);return !isNaN(d.getTime())&&d.getFullYear()===selY&&d.getMonth()===selM;}catch{return false;} });
   const monthIncome  = monthFin.filter(f=>f.type==="Income" ).reduce((s,f)=>s+f.amount,0);
   const monthExpense = monthFin.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
   const monthNet     = monthIncome - monthExpense;
@@ -781,13 +781,23 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",paddingTop:12,borderTop:`1px solid ${C.border}`}}>
-          <div>
-            <span style={{fontSize:13,color:C.muted}}>Total Income (all entries)</span>
+          <div style={{display:"flex",flexDirection:"column",gap:4,width:"100%"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:13,fontWeight:600,color:C.text}}>Total Income</span>
+              <span style={{fontSize:18,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(totalBookingIncome)}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:12,color:C.muted}}>Total Expenses (YTD)</span>
+              <span style={{fontSize:15,fontWeight:700,color:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(ytdExpense)}</span>
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:6,borderTop:`1px dashed ${C.border}`}}>
+              <span style={{fontSize:12,color:C.muted}}>Net ({activePeriodLabel})</span>
+              <span style={{fontSize:15,fontWeight:800,color:ytdNet>=0?C.green:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(ytdNet)}</span>
+            </div>
             <div style={{fontSize:11,color:C.muted,marginTop:2}}>
-              Bookings: {currency(incCompleted+incReserved)} · Manual: {currency(incManual)}
+              Booking income: {currency(incCompleted+incReserved)} · Manual: {currency(incManual)}
             </div>
           </div>
-          <span style={{fontSize:20,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(totalBookingIncome)}</span>
         </div>
       </Card>
 
@@ -1282,20 +1292,21 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
 
     // Handle cancellation income/expense logic
     if(newBooking.status === "Cancelled") {
-      const amtPaid  = (+newBooking.price||0) - (+newBooking.balance||0);
-      const svcLabel = (Array.isArray(newBooking.services)&&newBooking.services.length>0?newBooking.services:[newBooking.service]).filter(Boolean).join(" + ");
+      const amtPaid    = (+newBooking.price||0) - (+newBooking.balance||0);
+      const svcLabel   = (Array.isArray(newBooking.services)&&newBooking.services.length>0?newBooking.services:[newBooking.service]).filter(Boolean).join(" + ");
+      // Use TODAY's date for cancellation entries — so they always appear in current period
+      const cancelDate = new Date().toISOString().slice(0,10);
 
       setFinancials(prev => {
         let updated = [...prev];
 
         // ── Always keep/create income if any payment was made ─────────────
-        // Both non-refundable AND refundable had real money received — keep it in income
         if(amtPaid > 0) {
           const existIncomeIdx = updated.findIndex(f=>f.type==="Income"&&f.bookingId===bId);
           const incomeEntry = {
             id:          existIncomeIdx>=0 ? updated[existIncomeIdx].id : uid(),
             type:        "Income",
-            date:        eventDate,
+            date:        cancelDate,  // today — shows in current YTD/Monthly
             category:    newBooking.cancelType==="non-refundable" ? "Non-Refundable Cancellation" : "Cancellation Payment",
             bookingId:   bId,
             amount:      amtPaid,
@@ -1307,19 +1318,17 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           if(existIncomeIdx>=0) updated[existIncomeIdx] = incomeEntry;
           else updated.push(incomeEntry);
         } else {
-          // No payment was ever made — remove any stale income entry
           updated = updated.filter(f=>!(f.type==="Income"&&f.bookingId===bId));
         }
 
         // ── Refunded: add/update a Refund expense to reconcile ────────────
-        // Income stays (money was received), expense records the money given back
         const existRefundIdx = updated.findIndex(f=>f.type==="Expense"&&f.category==="Refund"&&f.bookingId===bId);
         if(newBooking.cancelType==="refunded") {
-          const refundAmt = +newBooking.refundAmount || amtPaid; // default to full amount if not specified
+          const refundAmt   = +newBooking.refundAmount || amtPaid;
           const refundEntry = {
             id:          existRefundIdx>=0 ? updated[existRefundIdx].id : uid(),
             type:        "Expense",
-            date:        eventDate,
+            date:        cancelDate,  // today — shows in current YTD/Monthly
             category:    "Refund",
             bookingId:   bId,
             amount:      refundAmt,
@@ -1329,7 +1338,6 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           if(existRefundIdx>=0) updated[existRefundIdx] = refundEntry;
           else updated.push(refundEntry);
         } else {
-          // Non-refundable or no type — remove any existing refund expense
           updated = updated.filter(f=>!(f.type==="Expense"&&f.category==="Refund"&&f.bookingId===bId));
         }
 
