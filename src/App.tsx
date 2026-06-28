@@ -319,17 +319,24 @@ function useGoogleSync(
             return Array.from(map.values());
           });
         }
-        // Single setFinancials call — merge sheet data + sync income in one step
-        // Two separate setFinancials calls cause the second to capture stale prev state
+        // Single setFinancials call — merge + validate + sync in one step
         const loadedFins  = Array.isArray(d.financials) ? d.financials : [];
         const loadedStaff = Array.isArray(d.staffList)  ? d.staffList  : [];
         const loadedBooks = Array.isArray(d.bookings)   ? d.bookings   : [];
+
+        // Validate: ensure every financial entry has a correct type field
+        const validFins = loadedFins.map((f:any) => ({
+          ...f,
+          type: f.type === "Expense" ? "Expense" : "Income", // default to Income if missing/wrong
+          amount: Math.abs(+f.amount || 0), // ensure positive number
+        }));
+
         setFinancials(prev => {
-          // Step 1: merge sheet financials into local state (sheet wins for existing IDs)
+          // Merge: prev local state + loaded sheet financials (sheet wins by ID)
           const map = new Map(prev.map((f:any) => [f.id, f]));
-          loadedFins.forEach((f:any) => map.set(f.id, f));
+          validFins.forEach((f:any) => map.set(f.id, f));
           const merged = Array.from(map.values());
-          // Step 2: sync booking-linked income on the merged result
+          // Sync booking-linked income on merged result
           return loadedBooks.length > 0
             ? syncIncomeForBookings(loadedBooks, merged, loadedStaff)
             : merged;
@@ -345,10 +352,11 @@ function useGoogleSync(
         if (d.services && Array.isArray(d.services))  setServices(d.services);
         if (d.settings && typeof d.settings === "object") setSettings(d.settings);
       }
-      // setLoadDone(true) triggers re-render → save useEffect now runs with real data
-      setLoadDone(true);
+      // Small delay before enabling auto-save — ensures all setX calls above
+      // have flushed through React's state batching before first save fires
+      setTimeout(() => setLoadDone(true), 500);
     }).catch(() => {
-      setLoadDone(true); // allow saves even if load fails
+      setTimeout(() => setLoadDone(true), 500);
     });
   }, []);
 
@@ -374,10 +382,15 @@ function useGoogleSync(
       if (staff.length)  setStaffList(staff);
       if (svcs.length)   setServices(svcs);
       if (d.settings && typeof d.settings === "object") setSettings(d.settings);
-      // Merge prev state + sheet financials, then sync income — preserves local expenses
+      // Validate types, merge with prev, sync income
+      const validFins = fins.map((f:any) => ({
+        ...f,
+        type: f.type === "Expense" ? "Expense" : "Income",
+        amount: Math.abs(+f.amount || 0),
+      }));
       setFinancials(prev => {
         const map = new Map(prev.map((f:any) => [f.id, f]));
-        fins.forEach((f:any) => map.set(f.id, f)); // sheet wins for existing IDs
+        validFins.forEach((f:any) => map.set(f.id, f));
         const merged = Array.from(map.values());
         return books.length > 0 ? syncIncomeForBookings(books, merged, staff) : merged;
       });
@@ -398,10 +411,15 @@ function useGoogleSync(
       if(staff.length) setStaffList(staff);
       if(svcs.length)  setServices(svcs);
       if(d.settings && typeof d.settings === "object") setSettings(d.settings);
-      // Merge prev state + sheet financials, then sync — preserves local expenses
+      // Validate types, merge with prev, sync income
+      const validFins = fins.map((f:any) => ({
+        ...f,
+        type: f.type === "Expense" ? "Expense" : "Income",
+        amount: Math.abs(+f.amount || 0),
+      }));
       setFinancials(prev => {
         const map = new Map(prev.map((f:any) => [f.id, f]));
-        fins.forEach((f:any) => map.set(f.id, f)); // sheet wins for existing IDs
+        validFins.forEach((f:any) => map.set(f.id, f));
         const merged = Array.from(map.values());
         return books.length > 0 ? syncIncomeForBookings(books, merged, staff) : merged;
       });
