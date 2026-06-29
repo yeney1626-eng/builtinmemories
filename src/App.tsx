@@ -350,7 +350,7 @@ function useGoogleSync(
     });
   }, []);
 
-  // Auto-save — only after load resolves (loadDone is in dep array so effect re-runs when it flips)
+  // Auto-save bookings/settings with 3s debounce (they change together)
   useEffect(() => {
     if (!loadDone) return;
     clearTimeout(saveTimer.current);
@@ -358,7 +358,18 @@ function useGoogleSync(
       gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
     }, 3000);
     return () => clearTimeout(saveTimer.current);
-  }, [loadDone, bookings, financials, staffList, services, settings]);
+  }, [loadDone, bookings, staffList, services, settings]);
+
+  // Auto-save financials IMMEDIATELY — no debounce so expenses are never lost on reload
+  const finSaveTimer = useRef<any>(null);  // declared at hook level so it persists across renders
+  useEffect(() => {
+    if (!loadDone) return;
+    clearTimeout(finSaveTimer.current);
+    finSaveTimer.current = setTimeout(() => {
+      gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
+    }, 500); // 500ms — fast enough to catch before page reload
+    return () => clearTimeout(finSaveTimer.current);
+  }, [loadDone, financials]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
@@ -910,6 +921,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
       )}
     </div>
   );
+}
 
 // ── Sync income entries for bookings (called on save/import/status change only) ─
 function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
@@ -1917,7 +1929,7 @@ function PasswordSetting({ label, description, currentPwd, onSave }) {
   );
 }
 
-function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, sync }) {
+function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore }) {
   const [input, setInput] = useState("");
   const { gsUrl, setGsUrl, syncStatus, lastSynced, syncMsg, saveToSheet, loadFromSheet, testConnection } = sync;
 
@@ -2074,7 +2086,7 @@ export default function App() {
   const [services,   setServices]   = useState(SEED_SERVICES);
   const [theme,      setTheme]      = useState("light");
   // Feature passwords — null means no password required
-  const [passwords, setPasswords]   = useState({ bookings: "bookings", financials: null });
+  const [passwords, setPasswords]   = useState({ bookings: null, financials: null });
   const setPagePersist = (p) => { setPage(p); sessionStorage.setItem("bim_page", p); };
   const setAuthedPersist = (v) => { setAuthed(v); sessionStorage.setItem("bim_authed", v?"1":""); };
 
@@ -2127,7 +2139,7 @@ export default function App() {
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
-        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} sync={sync} />}
+        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPagePersist} theme={theme} setTheme={setTheme} onRefresh={manualRefresh} />}
     </div>
