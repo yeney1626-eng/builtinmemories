@@ -350,26 +350,16 @@ function useGoogleSync(
     });
   }, []);
 
-  // Auto-save bookings/settings with 3s debounce (they change together)
+  // Single auto-save — debounced 2s after ANY data change
+  // financials use a shorter 800ms timer so expenses are captured before reload
   useEffect(() => {
     if (!loadDone) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
-    }, 3000);
+    }, 2000);
     return () => clearTimeout(saveTimer.current);
-  }, [loadDone, bookings, staffList, services, settings]);
-
-  // Auto-save financials IMMEDIATELY — no debounce so expenses are never lost on reload
-  const finSaveTimer = useRef<any>(null);  // declared at hook level so it persists across renders
-  useEffect(() => {
-    if (!loadDone) return;
-    clearTimeout(finSaveTimer.current);
-    finSaveTimer.current = setTimeout(() => {
-      gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
-    }, 500); // 500ms — fast enough to catch before page reload
-    return () => clearTimeout(finSaveTimer.current);
-  }, [loadDone, financials]);
+  }, [loadDone, bookings, financials, staffList, services, settings.monthlyQuota]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
@@ -1931,7 +1921,6 @@ function PasswordSetting({ label, description, currentPwd, onSave }) {
 
 function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore }) {
   const [input, setInput] = useState("");
-  const { gsUrl, setGsUrl, syncStatus, lastSynced, syncMsg, saveToSheet, loadFromSheet, testConnection } = sync;
 
   function add() {
     const v = input.trim(); if(!v) return;
@@ -1939,9 +1928,6 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
     setServices(prev=>[...prev,v]); setInput("");
   }
   function remove(s) { if(!window.confirm(`Remove "${s}"?`)) return; setServices(prev=>prev.filter(x=>x!==s)); }
-
-  const statusColor = { idle:"#6B7A99", saving:C.amber, loading:C.amber, ok:C.green, error:C.red }[syncStatus];
-  const statusIcon  = { idle:"○", saving:"⟳", loading:"⟳", ok:"✓", error:"✗" }[syncStatus];
 
   return (
     <div style={{maxWidth:560}}>
@@ -2102,13 +2088,15 @@ export default function App() {
   const isMobile = useIsMobile();
 
   const [monthlyQuota, setMonthlyQuota] = useState(50000);
-  const settings = { monthlyQuota, passwords };
+  // Memoize settings to prevent new object reference on every render
+  const settingsRef = useRef({ monthlyQuota, passwords });
+  settingsRef.current = { monthlyQuota, passwords };
   function setSettings(s) {
     if(s.monthlyQuota !== undefined) setMonthlyQuota(+s.monthlyQuota || 50000);
     if(s.passwords !== undefined) setPasswords(s.passwords);
   }
   const { restore, manualRefresh } = useGoogleSync(
-    bookings, financials, staffList, services, settings,
+    bookings, financials, staffList, services, settingsRef.current,
     setBookings, setFinancials, setStaffList, setServices, setSettings
   );
 
@@ -2133,7 +2121,7 @@ export default function App() {
           <span style={{color:themeObj.sidebarText,fontSize:11,cursor:"pointer",padding:"4px 8px",borderRadius:6,background:"rgba(255,255,255,0.08)"}} onClick={()=>exportFullBackup(bookings,financials,staffList)} title="Download Backup">⬇</span>
         </div>
       )}
-      <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",width:isMobile?"100%":undefined,minWidth:0}}>
+      <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",width:isMobile?"100%":undefined,minWidth:0,overflowY:"auto"}}>
         {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} />}
         {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} />}
         {page==="packages"   && <Packages    isMobile={isMobile} />}
