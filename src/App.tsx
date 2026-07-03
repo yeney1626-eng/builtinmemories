@@ -15,9 +15,13 @@ async function gsFetch(action, data) {
 
 function useGoogleSync(bookings, financials, staffList, services, settings,
   setBookings, setFinancials, setStaffList, setServices, setSettings) {
-  const saveTimer   = useRef(null);
-  const loadStarted = useRef(false);
-  const [loadDone, setLoadDone] = useState(false);
+  const saveTimer    = useRef(null);
+  const loadStarted  = useRef(false);
+  const loadDone     = useRef(false);        // useRef not useState — never triggers re-render
+  const latestData   = useRef({ bookings, financials, staffList, services, settings });
+
+  // Keep latestData ref current so save always uses fresh values
+  latestData.current = { bookings, financials, staffList, services, settings };
 
   useEffect(() => {
     if (loadStarted.current) return;
@@ -25,42 +29,42 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
     gsFetch("load", {}).then(result => {
       if (result.ok && result.data) {
         const d = result.data;
-        if (d.bookings && Array.isArray(d.bookings)) setBookings(d.bookings);
+        if (d.bookings  && Array.isArray(d.bookings))  setBookings(d.bookings);
         if (d.financials && Array.isArray(d.financials)) {
-          const validFins = d.financials.map(f => ({
+          setFinancials(d.financials.map(f => ({
             ...f,
-            type: f.type === "Expense" ? "Expense" : "Income",
+            type:   f.type === "Expense" ? "Expense" : "Income",
             amount: Math.abs(+f.amount || 0),
-          }));
-          setFinancials(validFins);
+          })));
         }
         if (d.staffList && Array.isArray(d.staffList)) setStaffList(d.staffList);
-        if (d.services && Array.isArray(d.services)) setServices(d.services);
-        if (d.settings && typeof d.settings === "object") setSettings(d.settings);
+        if (d.services  && Array.isArray(d.services))  setServices(d.services);
+        if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
       }
-      setTimeout(() => setLoadDone(true), 300);
-    }).catch(() => { setTimeout(() => setLoadDone(true), 300); });
+      // Wait for React to commit all state updates before enabling saves
+      setTimeout(() => { loadDone.current = true; }, 1000);
+    }).catch(() => { setTimeout(() => { loadDone.current = true; }, 1000); });
   }, []);
 
+  // Auto-save: dep array only has the actual data — settings uses ref so no spurious triggers
   useEffect(() => {
-    if (!loadDone) return;
+    if (!loadDone.current) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      gsFetch("save", { bookings, financials, staffList, services, settings }).catch(() => {});
-    }, 1500);
+      const d = latestData.current;
+      gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, settings: d.settings }).catch(() => {});
+    }, 2000);
     return () => clearTimeout(saveTimer.current);
-  }, [loadDone, bookings, financials, staffList, services, settings]);
+  }, [bookings, financials, staffList, services]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
     if (result.ok && result.data) {
       const d = result.data;
-      if (Array.isArray(d.bookings)) setBookings(d.bookings);
-      if (Array.isArray(d.financials)) {
-        setFinancials(d.financials.map(f => ({ ...f, type: f.type === "Expense" ? "Expense" : "Income", amount: Math.abs(+f.amount || 0) })));
-      }
-      if (Array.isArray(d.staffList)) setStaffList(d.staffList);
-      if (Array.isArray(d.services)) setServices(d.services);
+      if (Array.isArray(d.bookings))   setBookings(d.bookings);
+      if (Array.isArray(d.financials)) setFinancials(d.financials.map(f => ({ ...f, type: f.type === "Expense" ? "Expense" : "Income", amount: Math.abs(+f.amount || 0) })));
+      if (Array.isArray(d.staffList))  setStaffList(d.staffList);
+      if (Array.isArray(d.services))   setServices(d.services);
       if (d.settings && typeof d.settings === "object") setSettings(d.settings);
     } else {
       alert("Nothing found in the backup sheet yet.");
@@ -520,7 +524,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const quotaColor   = quotaPct >= 100 ? C.green : quotaPct >= 60 ? C.amber : C.red;
 
   // Pending collections
-  const pendingBalance = bookings.filter(b=>b.paymentStatus==="Pending Balance"||b.paymentStatus==="Pending Reservation").reduce((s,b)=>s+(+b.balance||0),0);
+  const pendingBalance = bookings.filter(b=>b.status!=="Cancelled"&&(b.paymentStatus==="Pending Balance"||b.paymentStatus==="Pending Reservation")).reduce((s,b)=>s+(+b.balance||0),0);
 
   // Selected month booking count (non-cancelled)
   const monthBookings = bookings.filter(b=>{ try{ const d=new Date(b.datetime); return b.status!=="Cancelled"&&!isNaN(d.getTime())&&d.getMonth()===selM&&d.getFullYear()===selY; }catch{return false;} }).length;
