@@ -19,6 +19,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
   const loadStarted = useRef(false);
   const loadDone    = useRef(false);
   const hasData     = useRef(false);
+  const [isLoading, setIsLoading] = useState(true); // true until first load completes
 
   // Reset on first render so hot reloads don't leave stale refs
   useEffect(() => {
@@ -66,8 +67,8 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
         hasData.current = true; // we have real data now
       }
       // Mark load done after a delay so all setX calls have committed
-      setTimeout(() => { loadDone.current = true; }, 1500);
-    }).catch(() => { setTimeout(() => { loadDone.current = true; }, 1500); });
+      setTimeout(() => { loadDone.current = true; setIsLoading(false); }, 1500);
+    }).catch(() => { setTimeout(() => { loadDone.current = true; setIsLoading(false); }, 1500); });
   }, []);
 
   // Trigger save when data changes — but only after load+delay
@@ -90,7 +91,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
 
   async function manualRefresh() { return restore(); }
 
-  return { restore, manualRefresh };
+  return { restore, manualRefresh, isLoading };
 }
 
 // ── Logo ──────────────────────────────────────────────────────────────────────
@@ -2117,7 +2118,7 @@ export default function App() {
     if (s.monthlyQuota !== undefined) setMonthlyQuota(+s.monthlyQuota || 50000);
     if (s.passwords !== undefined) setPasswords(s.passwords);
   }
-  const { restore, manualRefresh } = useGoogleSync(
+  const { restore, manualRefresh, isLoading } = useGoogleSync(
     bookings, financials, staffList, services, settings,
     setBookings, setFinancials, setStaffList, setServices, setSettings
   );
@@ -2128,6 +2129,17 @@ export default function App() {
   if(!authed) return (
     <ThemeContext.Provider value={themeObj}>
       <Login onAuth={()=>setAuthedPersist(true)} />
+    </ThemeContext.Provider>
+  );
+
+  if(isLoading) return (
+    <ThemeContext.Provider value={themeObj}>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:themeObj.bg,gap:16}}>
+        <img src={LOGO_URI} alt="logo" style={{width:64,height:64,borderRadius:"50%",objectFit:"cover",border:`2px solid ${themeObj.amber}`,background:"#fff"}} />
+        <div style={{width:32,height:32,border:`3px solid ${themeObj.border}`,borderTopColor:themeObj.amber,borderRadius:"50%",animation:"bimspin 0.8s linear infinite"}} />
+        <div style={{color:themeObj.muted,fontSize:14,fontWeight:600}}>Loading your data…</div>
+        <style>{`@keyframes bimspin{to{transform:rotate(360deg)}}`}</style>
+      </div>
     </ThemeContext.Provider>
   );
 
