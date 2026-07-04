@@ -53,22 +53,27 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
     if (loadStarted.current) return;
     loadStarted.current = true;
     gsFetch("load", {}).then(result => {
+      console.log("[BIM Sync] Load result:", result);
       if (result.ok && result.data) {
         const d = result.data;
+        console.log("[BIM Sync] Bookings:", d.bookings?.length, "Financials:", d.financials?.length);
         if (d.bookings  && Array.isArray(d.bookings)  && d.bookings.length > 0)  setBookings(d.bookings);
         if (d.financials && Array.isArray(d.financials)) {
-          setFinancials(d.financials.map(f => ({
+          const validFins = d.financials.map(f => ({
             ...f, type: f.type === "Expense" ? "Expense" : "Income", amount: Math.abs(+f.amount || 0),
-          })));
+          }));
+          console.log("[BIM Sync] Setting financials:", validFins.length, "entries. Income:", validFins.filter(f=>f.type==="Income").length, "Expense:", validFins.filter(f=>f.type==="Expense").length);
+          setFinancials(validFins);
         }
         if (d.staffList && Array.isArray(d.staffList) && d.staffList.length > 0) setStaffList(d.staffList);
         if (d.services  && Array.isArray(d.services)  && d.services.length > 0)  setServices(d.services);
         if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
-        hasData.current = true; // we have real data now
+        hasData.current = true;
+      } else {
+        console.log("[BIM Sync] Load returned no data or ok=false:", result);
       }
-      // Mark load done after a delay so all setX calls have committed
       setTimeout(() => { loadDone.current = true; setIsLoading(false); }, 1500);
-    }).catch(() => { setTimeout(() => { loadDone.current = true; setIsLoading(false); }, 1500); });
+    }).catch((err) => { console.error("[BIM Sync] Load failed:", err); setTimeout(() => { loadDone.current = true; setIsLoading(false); }, 1500); });
   }, []);
 
   // Trigger save when data changes — but only after load+delay
@@ -91,7 +96,16 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
 
   async function manualRefresh() { return restore(); }
 
-  return { restore, manualRefresh, isLoading };
+  async function manualSave() {
+    const d = latest.current;
+    console.log("[BIM Sync] Manual save triggered. Bookings:", d.bookings.length, "Financials:", d.financials.length);
+    const result = await gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, settings: d.settings }).catch(err => { console.error("[BIM Sync] Manual save failed:", err); return { ok:false }; });
+    console.log("[BIM Sync] Manual save result:", result);
+    if (result.ok) alert("✅ Saved to Google Sheets successfully.");
+    else alert("❌ Save failed. Check console for details.");
+  }
+
+  return { restore, manualRefresh, isLoading, manualSave };
 }
 
 // ── Logo ──────────────────────────────────────────────────────────────────────
@@ -1978,9 +1992,10 @@ function PasswordSetting({ label, description, currentPwd, onSave }) {
   );
 }
 
-function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore }) {
+function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore, onSave }) {
   const [input, setInput] = useState("");
   const [restoring, setRestoring] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   function add() {
     const v = input.trim(); if(!v) return;
@@ -1994,6 +2009,12 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
     setRestoring(true);
     await onRestore();
     setRestoring(false);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave();
+    setSaving(false);
   }
 
   return (
@@ -2011,6 +2032,11 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
           <Btn variant="success" onClick={()=>exportFullBackup(bookings,financials,staffList)}>
             ⬇ Download Full Backup (.xlsx)
           </Btn>
+          {onSave&&(
+            <Btn variant="primary" onClick={handleSave} style={{opacity:saving?0.6:1}}>
+              {saving ? "⟳ Saving…" : "☁️ Save to Sheet Now"}
+            </Btn>
+          )}
           {onRestore&&(
             <Btn variant="amber" onClick={handleRestore} style={{opacity:restoring?0.6:1}}>
               {restoring ? "⟳ Restoring…" : "☁️ Restore from Backup Sheet"}
@@ -2118,7 +2144,7 @@ export default function App() {
     if (s.monthlyQuota !== undefined) setMonthlyQuota(+s.monthlyQuota || 50000);
     if (s.passwords !== undefined) setPasswords(s.passwords);
   }
-  const { restore, manualRefresh, isLoading } = useGoogleSync(
+  const { restore, manualRefresh, isLoading, manualSave } = useGoogleSync(
     bookings, financials, staffList, services, settings,
     setBookings, setFinancials, setStaffList, setServices, setSettings
   );
@@ -2161,7 +2187,7 @@ export default function App() {
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} />}
-        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} />}
+        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} onSave={manualSave} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPagePersist} theme={theme} setTheme={setTheme} onRefresh={manualRefresh} />}
     </div>
