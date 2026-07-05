@@ -1,5 +1,5 @@
 // BIM Service Worker — offline cache & PWA support
-const CACHE = "bim-v1";
+const CACHE = "bim-v2";
 const PRECACHE = [
   "/",
   "/index.html",
@@ -9,14 +9,12 @@ const PRECACHE = [
   "/icons/apple-touch-icon.png",
 ];
 
-// Install: pre-cache shell
 self.addEventListener("install", e => {
   e.waitUntil(
     caches.open(CACHE).then(c => c.addAll(PRECACHE)).then(() => self.skipWaiting())
   );
 });
 
-// Activate: clean up old caches
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys().then(keys =>
@@ -25,33 +23,46 @@ self.addEventListener("activate", e => {
   );
 });
 
-// Fetch: network-first for API calls, cache-first for assets
 self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
 
-  // Always go network for Google Apps Script (sync calls)
-  if (url.hostname.includes("script.google.com")) return;
+  // Fully bypass service worker for Google Apps Script sync calls —
+  // no respondWith at all, so there's zero chance of response body races
+  if (url.hostname.includes("script.google.com") || url.hostname.includes("googleusercontent.com")) {
+    return;
+  }
 
-  // Network-first for HTML (always fresh app shell)
   if (e.request.mode === "navigate") {
     e.respondWith(
-      fetch(e.request)
-        .then(res => { caches.open(CACHE).then(c => c.put(e.request, res.clone())); return res; })
-        .catch(() => caches.match("/index.html"))
+      (async () => {
+        try {
+          const res = await fetch(e.request);
+          const resClone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, resClone)).catch(() => {});
+          return res;
+        } catch (err) {
+          const cached = await caches.match("/index.html");
+          return cached || Response.error();
+        }
+      })()
     );
     return;
   }
 
-  // Cache-first for everything else (fonts, icons, JS bundles)
   e.respondWith(
-    caches.match(e.request).then(cached => {
+    (async () => {
+      const cached = await caches.match(e.request);
       if (cached) return cached;
-      return fetch(e.request).then(res => {
+      try {
+        const res = await fetch(e.request);
         if (res && res.status === 200 && res.type !== "opaque") {
-          caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+          const resClone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, resClone)).catch(() => {});
         }
         return res;
-      });
-    })
+      } catch (err) {
+        return Response.error();
+      }
+    })()
   );
 });
