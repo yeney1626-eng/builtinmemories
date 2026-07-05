@@ -529,6 +529,12 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const ytdExpense = ytdFin.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
   const ytdNet     = ytdIncome - ytdExpense;
 
+  // Debug: log what Dashboard actually received and computed
+  console.log("[Dashboard] financials.length:", financials.length, "bookings.length:", bookings.length);
+  console.log("[Dashboard] currentYear:", currentYear, "periodMonths:", Array.from(periodMonths));
+  console.log("[Dashboard] sample financial dates:", financials.slice(0,3).map(f=>({date:f.date, type:f.type, amount:f.amount, parsedYear:new Date(f.date).getFullYear()})));
+  console.log("[Dashboard] ytdFin.length:", ytdFin.length, "ytdIncome:", ytdIncome, "ytdExpense:", ytdExpense);
+
   // Selected month financials
   const [selY, selM] = selectedMonth.split("-").map(Number);
   const monthFin     = financials.filter(f=>{ try{const d=new Date(f.date);return !isNaN(d.getTime())&&d.getFullYear()===selY&&d.getMonth()===selM;}catch{return false;} });
