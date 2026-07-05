@@ -36,14 +36,20 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
   latest.current = { bookings, financials, staffList, services, settings };
 
   function scheduleSave() {
-    if (!loadDone.current) return;          // never save before load finishes
-    if (!hasData.current) return;           // never save empty seed data
+    if (!loadDone.current) return;          // never save before load attempt finishes
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       const d = latest.current;
-      // Final guard: don't save if both bookings and financials are empty
-      // Never overwrite sheet with empty seed data
-      if (d.bookings.length === 0 && d.financials.length === 0 && d.staffList.length === 0) return;
+      // Guard against wiping the sheet with empty seed data — but ONLY if
+      // we never received any data at all AND settings are still default.
+      // Settings (passwords, quota) must always be allowed to save even
+      // when bookings/financials/staff are genuinely empty (fresh install).
+      const allDataEmpty = d.bookings.length === 0 && d.financials.length === 0 && d.staffList.length === 0;
+      if (allDataEmpty && !hasData.current) {
+        // Still allow saving settings-only changes even with no data yet
+        gsFetch("save", { bookings: [], financials: [], staffList: [], services: d.services, settings: d.settings }).catch(() => {});
+        return;
+      }
       gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, settings: d.settings }).catch(() => {});
     }, 2000);
   }
@@ -77,7 +83,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
   }, []);
 
   // Trigger save when data changes — but only after load+delay
-  useEffect(() => { scheduleSave(); }, [bookings, financials, staffList, services]);
+  useEffect(() => { scheduleSave(); }, [bookings, financials, staffList, services, settings.monthlyQuota, settings.passwords?.bookings, settings.passwords?.financials]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
@@ -244,6 +250,19 @@ const CATEGORIES = ["Service Revenue","Transportation","Staff Salary","Registrat
 // ── Helpers ──────────────────────────────────────────────────────────────────
 let _id = 200;
 const uid = () => `x${++_id}`;
+
+// Generate a human-readable Booking ID: BK-YYYY-#### (sequential per year)
+function genBookingId(existingBookings) {
+  const year = new Date().getFullYear();
+  const prefix = `BK-${year}-`;
+  const nums = existingBookings
+    .map(b => b.id)
+    .filter(id => typeof id === "string" && id.startsWith(prefix))
+    .map(id => parseInt(id.slice(prefix.length), 10))
+    .filter(n => !isNaN(n));
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `${prefix}${String(next).padStart(4,"0")}`;
+}
 const currency = (n) => `₱${Number(n).toLocaleString("en-PH", {minimumFractionDigits:0, maximumFractionDigits:0})}`;
 
 // ── Booking income rules ─────────────────────────────────────────────────────
@@ -639,12 +658,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
       {/* ── Balance Card ─────────────────────────────────────────────── */}
       <Card style={{marginBottom:24,borderLeft:`4px solid ${C.amber}`}}>
         <div style={{fontWeight:700,fontSize:15,color:C.text,marginBottom:14}}>💳 Balance Overview</div>
-        <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:12}}>
-          <div style={{textAlign:"center",padding:"10px 8px",background:C.green+"12",borderRadius:8}}>
-            <div style={{fontSize:10,fontWeight:700,color:C.green,textTransform:"uppercase",marginBottom:4}}>Total Collected</div>
-            <div style={{fontSize:isMobile?16:20,fontWeight:800,color:C.green,fontVariantNumeric:"tabular-nums"}}>{currency(ytdIncome)}</div>
-            <div style={{fontSize:10,color:C.muted,marginTop:2}}>{activePeriodLabel}</div>
-          </div>
+        <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(2,1fr)",gap:12}}>
           <div style={{textAlign:"center",padding:"10px 8px",background:C.amber+"12",borderRadius:8}}>
             <div style={{fontSize:10,fontWeight:700,color:C.amber,textTransform:"uppercase",marginBottom:4}}>Pending Balance</div>
             <div style={{fontSize:isMobile?16:20,fontWeight:800,color:C.amber,fontVariantNumeric:"tabular-nums"}}>{currency(pendingBalance)}</div>
@@ -654,11 +668,6 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
             <div style={{fontSize:10,fontWeight:700,color:C.navy,textTransform:"uppercase",marginBottom:4}}>Package Value</div>
             <div style={{fontSize:isMobile?16:20,fontWeight:800,color:C.navy,fontVariantNumeric:"tabular-nums"}}>{currency(bookings.filter(b=>b.status!=="Cancelled").reduce((s,b)=>s+(+b.price||0),0))}</div>
             <div style={{fontSize:10,color:C.muted,marginTop:2}}>non-cancelled</div>
-          </div>
-          <div style={{textAlign:"center",padding:"10px 8px",background:C.red+"12",borderRadius:8}}>
-            <div style={{fontSize:10,fontWeight:700,color:C.red,textTransform:"uppercase",marginBottom:4}}>Expenses</div>
-            <div style={{fontSize:isMobile?16:20,fontWeight:800,color:C.red,fontVariantNumeric:"tabular-nums"}}>{currency(ytdExpense)}</div>
-            <div style={{fontSize:10,color:C.muted,marginTop:2}}>{activePeriodLabel}</div>
           </div>
         </div>
       </Card>
@@ -946,6 +955,12 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
   return (
     <Modal title={title} onClose={onCancel} width={620}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        {form.id&&(
+          <div style={{gridColumn:"span 2",display:"flex",alignItems:"center",gap:8,background:C.bg,borderRadius:6,padding:"6px 12px"}}>
+            <span style={{fontSize:11,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em"}}>Booking ID</span>
+            <span style={{fontSize:13,fontWeight:700,color:C.navy,fontFamily:"monospace"}}>{form.id}</span>
+          </div>
+        )}
         <Input label="Client Name" value={form.client} onChange={e=>setForm({...form,client:e.target.value})} style={{gridColumn:"span 2"}} />
         <Input label="Phone" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} />
         <Input label="Venue" value={form.venue||""} onChange={e=>setForm({...form,venue:e.target.value})} />
@@ -1023,7 +1038,7 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
             <Input label="Balance (₱)" type="number" value={form.balance||""} onChange={e=>setForm({...form,balance:+e.target.value})} />
             <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>setForm({...form,paymentStatus:e.target.value})}>
               <option value="">Select...</option>
-              {["Paid","Pending Balance","Pending Reservation"].map(s=><option key={s}>{s}</option>)}
+              {["Paid","Pending Balance","Pending Reservation","Cancelled/Non-Refundable","Cancelled/Refunded"].map(s=><option key={s}>{s}</option>)}
             </Select>
           </div>
           {price>0 && (
@@ -1062,13 +1077,13 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
     return matchStatus&&matchSearch;
   }).sort((a,b)=>new Date(b.datetime).getTime()-new Date(a.datetime).getTime());
 
-  function openNew()   { setForm(emptyBooking()); setModal("new"); }
+  function openNew()   { setForm({...emptyBooking(), id: genBookingId(bookings)}); setModal("new"); }
   function openEdit(b) { setForm({...b}); setModal(b.id); }
 
   function save() {
     if(!form.client||!form.datetime) return alert("Client and date are required.");
     const isNew = modal==="new";
-    const newBooking = isNew ? {...form, id:uid()} : {...form};
+    const newBooking = isNew ? {...form, id: form.id || genBookingId(bookings)} : {...form};
     const bId = newBooking.id || modal;
     const svcList = Array.isArray(newBooking.services)&&newBooking.services.length>0 ? newBooking.services : (newBooking.service?[newBooking.service]:[]);
     const svcLabel = svcList.join(" + ") || newBooking.service || "";
@@ -1562,6 +1577,7 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
   const [tab,    setTab]   = useState("Income");  // "Income" | "Expense"
   const [modal,  setModal] = useState(false);
   const [form,   setForm]  = useState(emptyEntry());
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const importIncRef  = useRef(null);
   const importExpRef  = useRef(null);
 
@@ -1570,6 +1586,23 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
   const totalIncome  = incomeList.reduce((s,f)=>s+f.amount,0);
   const totalExpense = expenseList.reduce((s,f)=>s+f.amount,0);
   const activeList   = tab==="Income" ? incomeList : expenseList;
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    setSelectedIds(prev => prev.size === activeList.length ? new Set() : new Set(activeList.map(f=>f.id)));
+  }
+  function bulkDelete() {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`Delete ${selectedIds.size} selected ${tab.toLowerCase()} entr${selectedIds.size!==1?"ies":"y"}?`)) return;
+    setFinancials(prev => prev.filter(f => !selectedIds.has(f.id)));
+    setSelectedIds(new Set());
+  }
 
   function save() {
     if(!form.amount||!form.description) return alert("Amount and description are required.");
@@ -1669,13 +1702,18 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
   const EntryCard = ({f}) => {
     const linked = f.bookingId?bookings.find(b=>b.id===f.bookingId):null;
     const isIncome = f.type==="Income";
+    const isSelected = selectedIds.has(f.id);
     return (
-      <Card style={{padding:"12px 14px"}}>
+      <Card style={{padding:"12px 14px",background:isSelected?(isIncome?C.green+"0A":C.red+"0A"):C.surface,border:isSelected?`1.5px solid ${isIncome?C.green:C.red}`:undefined}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{fontWeight:600,fontSize:13,marginBottom:3,wordBreak:"break-word",color:C.text}}>{f.description}</div>
-            <div style={{fontSize:11,color:C.muted}}>{f.date} · {f.category} · {f.method}</div>
-            {linked&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>📎 {linked.client}</div>}
+          <div style={{display:"flex",gap:10,flex:1,minWidth:0}}>
+            <input type="checkbox" checked={isSelected} onChange={()=>toggleSelect(f.id)}
+              style={{marginTop:3,width:16,height:16,accentColor:isIncome?C.green:C.red,cursor:"pointer",flexShrink:0}} />
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:600,fontSize:13,marginBottom:3,wordBreak:"break-word",color:C.text}}>{f.description}</div>
+              <div style={{fontSize:11,color:C.muted}}>{f.date} · {f.category} · {f.method}</div>
+              {linked&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>📎 {linked.client}</div>}
+            </div>
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
             <div style={{fontWeight:800,fontSize:15,fontVariantNumeric:"tabular-nums",color:isIncome?C.green:C.red}}>
@@ -1716,7 +1754,7 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
       {/* Tab switcher */}
       <div style={{display:"flex",borderBottom:`2px solid ${C.border}`,marginBottom:16}}>
         {["Income","Expense"].map(t=>(
-          <div key={t} onClick={()=>setTab(t)}
+          <div key={t} onClick={()=>{setTab(t);setSelectedIds(new Set());}}
             style={{padding:"10px 20px",cursor:"pointer",fontWeight:700,fontSize:14,
               color:tab===t?(t==="Income"?C.green:C.red):C.muted,
               borderBottom:tab===t?`2px solid ${t==="Income"?C.green:C.red}`:"2px solid transparent",
@@ -1744,6 +1782,23 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
         </>)}
         <span style={{marginLeft:"auto",fontSize:12,color:C.muted,alignSelf:"center"}}>{activeList.length} entries</span>
       </div>
+
+      {/* Select all + bulk delete bar */}
+      {activeList.length>0&&(
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,padding:"8px 12px",background:C.bg,borderRadius:8}}>
+          <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.text}}>
+            <input type="checkbox" checked={selectedIds.size===activeList.length&&activeList.length>0} onChange={toggleSelectAll}
+              style={{width:16,height:16,accentColor:C.navy,cursor:"pointer"}} />
+            Select All
+          </label>
+          {selectedIds.size>0&&(
+            <>
+              <span style={{fontSize:12,color:C.muted}}>{selectedIds.size} selected</span>
+              <Btn variant="danger" size="sm" onClick={bulkDelete} style={{marginLeft:"auto"}}>🗑 Delete Selected ({selectedIds.size})</Btn>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Entry list */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
