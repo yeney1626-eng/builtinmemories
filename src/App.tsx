@@ -251,10 +251,10 @@ const CATEGORIES = ["Service Revenue","Transportation","Staff Salary","Registrat
 let _id = 200;
 const uid = () => `x${++_id}`;
 
-// Generate a human-readable Booking ID: BK-YYYY-#### (sequential per year)
+// Generate a human-readable Booking ID: BIM-YYYY-#### (sequential per year)
 function genBookingId(existingBookings) {
   const year = new Date().getFullYear();
-  const prefix = `BK-${year}-`;
+  const prefix = `BIM-${year}-`;
   const nums = existingBookings
     .map(b => b.id)
     .filter(id => typeof id === "string" && id.startsWith(prefix))
@@ -1064,11 +1064,13 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
   );
 }
 
-function Bookings({ bookings, setBookings, staffList, services, financials, setFinancials, isMobile }) {
+function Bookings({ bookings, setBookings, staffList, services, financials, setFinancials, isMobile, bookingsPwd }) {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [modal, setModal]   = useState(null);
   const [form,  setForm]    = useState(emptyBooking());
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const bookingGate = usePasswordGate(bookingsPwd);
 
   const filtered = bookings.filter(b=>{
     const matchStatus = filter==="All"||b.status===filter;
@@ -1078,7 +1080,7 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
   }).sort((a,b)=>new Date(b.datetime).getTime()-new Date(a.datetime).getTime());
 
   function openNew()   { setForm({...emptyBooking(), id: genBookingId(bookings)}); setModal("new"); }
-  function openEdit(b) { setForm({...b}); setModal(b.id); }
+  function openEdit(b) { bookingGate.request(()=>{ setForm({...b}); setModal(b.id); }); }
 
   function save() {
     if(!form.client||!form.datetime) return alert("Client and date are required.");
@@ -1126,14 +1128,36 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
   }
 
   function doDelete(id) {
-    const booking = bookings.find(b=>b.id===id);
-    if(booking?.status==="Cancelled") {
-      if(!window.confirm("Remove this cancelled booking? Linked income/expense entries will also be removed.")) return;
-    } else {
-      if(!window.confirm("Delete this booking? Linked income and expense entries will also be removed.")) return;
-    }
-    setBookings(prev=>prev.filter(b=>b.id!==id));
-    setFinancials(prev=>prev.filter(f=>f.bookingId!==id));
+    bookingGate.request(()=>{
+      const booking = bookings.find(b=>b.id===id);
+      if(booking?.status==="Cancelled") {
+        if(!window.confirm("Remove this cancelled booking? Linked income/expense entries will also be removed.")) return;
+      } else {
+        if(!window.confirm("Delete this booking? Linked income and expense entries will also be removed.")) return;
+      }
+      setBookings(prev=>prev.filter(b=>b.id!==id));
+      setFinancials(prev=>prev.filter(f=>f.bookingId!==id));
+    });
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    setSelectedIds(prev => prev.size === filtered.length ? new Set() : new Set(filtered.map(b=>b.id)));
+  }
+  function bulkDelete() {
+    if (selectedIds.size === 0) return;
+    bookingGate.request(()=>{
+      if(!window.confirm(`Delete ${selectedIds.size} selected booking${selectedIds.size!==1?"s":""}? Linked income and expense entries will also be removed.`)) return;
+      setBookings(prev => prev.filter(b => !selectedIds.has(b.id)));
+      setFinancials(prev => prev.filter(f => !selectedIds.has(f.bookingId)));
+      setSelectedIds(new Set());
+    });
   }
 
   const staffName = (id) => staffList.find(s=>s.id===id)?.name||"—";
@@ -1233,8 +1257,12 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
 
   return (
     <div>
+      {bookingGate.Gate}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:10}}>
-        <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Bookings</h2>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Bookings</h2>
+          {bookingsPwd&&bookingGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Unlocked</span>}
+        </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <Btn variant="outline" size="sm" onClick={exportBookingsExcel}>⬇ Excel</Btn>
           <Btn variant="outline" size="sm" onClick={()=>importBookRef.current.click()}>⬆ Import Excel</Btn>
@@ -1242,6 +1270,13 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           {!isMobile&&<Btn variant="amber" onClick={openNew}>+ New Booking</Btn>}
         </div>
       </div>
+
+      {selectedIds.size>0&&(
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,padding:"8px 12px",background:C.bg,borderRadius:8}}>
+          <span style={{fontSize:12,color:C.muted}}>{selectedIds.size} selected</span>
+          <Btn variant="danger" size="sm" onClick={bulkDelete} style={{marginLeft:"auto"}}>🗑 Delete Selected ({selectedIds.size})</Btn>
+        </div>
+      )}
 
       <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"nowrap",overflowX:"auto",paddingBottom:2,WebkitOverflowScrolling:"touch"}}>
         <input placeholder="Search client or service…" value={search} onChange={e=>setSearch(e.target.value)}
@@ -1262,11 +1297,18 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
             <Card key={b.id} style={{padding:0,overflow:"hidden"}}>
               <div style={{display:"flex",alignItems:"stretch"}}>
                 <div style={{width:4,background:STATUS_COLOR[b.status]||C.muted,flexShrink:0,borderRadius:"8px 0 0 8px"}} />
+                <div style={{display:"flex",alignItems:"flex-start",padding:"12px 0 0 10px"}}>
+                  <input type="checkbox" checked={selectedIds.has(b.id)} onChange={()=>toggleSelect(b.id)}
+                    style={{width:16,height:16,accentColor:C.navy,cursor:"pointer"}} />
+                </div>
                 <div style={{flex:1,padding:"12px 14px"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-                    <div style={{fontWeight:700,fontSize:14}}>{b.client}</div>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:14}}>{b.client}</div>
+                      <div style={{fontSize:10,color:C.muted,fontFamily:"monospace",marginTop:1}}>{b.id}</div>
+                    </div>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); }}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{ const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); }); }}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1309,19 +1351,28 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14,minWidth:900}}>
             <thead>
               <tr style={{background:C.bg}}>
-                {["Client","Package","Event Date","Venue","Pax","Price","Paid","Balance","Status",""].map(h=>(
+                <th style={{padding:"11px 16px",borderBottom:`1px solid ${C.border}`}}>
+                  <input type="checkbox" checked={selectedIds.size===filtered.length&&filtered.length>0} onChange={toggleSelectAll}
+                    style={{width:16,height:16,accentColor:C.navy,cursor:"pointer"}} />
+                </th>
+                {["Booking ID","Client","Package","Event Date","Venue","Pax","Price","Paid","Balance","Status",""].map(h=>(
                   <th key={h} style={{padding:"11px 16px",textAlign:"left",fontWeight:600,color:C.muted,fontSize:12,textTransform:"uppercase",letterSpacing:"0.04em",borderBottom:`1px solid ${C.border}`}}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length===0&&<tr><td colSpan={10} style={{padding:32,textAlign:"center",color:C.muted}}>No bookings found.</td></tr>}
+              {filtered.length===0&&<tr><td colSpan={12} style={{padding:32,textAlign:"center",color:C.muted}}>No bookings found.</td></tr>}
               {filtered.map(b=>{
                 const total = +b.price||0;
                 const bal   = +b.balance||0;
                 const paid  = total-bal;
                 return (
                 <tr key={b.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                  <td style={{padding:"12px 16px"}}>
+                    <input type="checkbox" checked={selectedIds.has(b.id)} onChange={()=>toggleSelect(b.id)}
+                      style={{width:16,height:16,accentColor:C.navy,cursor:"pointer"}} />
+                  </td>
+                  <td style={{padding:"12px 16px",fontFamily:"monospace",fontSize:12,color:C.muted}}>{b.id}</td>
                   <td style={{padding:"12px 16px"}}>
                     <div style={{fontWeight:600}}>{b.client}</div>
                     <div style={{fontSize:12,color:C.muted}}>{b.phone||""}</div>
@@ -1335,7 +1386,7 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
                   <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums",fontWeight:700,color:bal>0?C.amber:C.green}}>{bal>0?currency(bal):"✓ Paid"}</td>
                   <td style={{padding:"12px 16px"}}>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); }}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{ const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); }); }}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1573,13 +1624,13 @@ function parseCSV(text) {
   });
 }
 
-function Financials({ financials, setFinancials, bookings, isMobile }) {
+function Financials({ financials, setFinancials, bookings, isMobile, financialsPwd }) {
   const [tab,    setTab]   = useState("Income");  // "Income" | "Expense"
   const [modal,  setModal] = useState(false);
   const [form,   setForm]  = useState(emptyEntry());
-  const [selectedIds, setSelectedIds] = useState(new Set());
   const importIncRef  = useRef(null);
   const importExpRef  = useRef(null);
+  const finGate = usePasswordGate(financialsPwd);
 
   const incomeList  = financials.filter(f=>f.type==="Income" ).sort((a,b)=>new Date(b.date).getTime()-new Date(a.date).getTime());
   const expenseList = financials.filter(f=>f.type==="Expense").sort((a,b)=>new Date(b.date).getTime()-new Date(a.date).getTime());
@@ -1587,29 +1638,13 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
   const totalExpense = expenseList.reduce((s,f)=>s+f.amount,0);
   const activeList   = tab==="Income" ? incomeList : expenseList;
 
-  function toggleSelect(id) {
-    setSelectedIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-  function toggleSelectAll() {
-    setSelectedIds(prev => prev.size === activeList.length ? new Set() : new Set(activeList.map(f=>f.id)));
-  }
-  function bulkDelete() {
-    if (selectedIds.size === 0) return;
-    if (!window.confirm(`Delete ${selectedIds.size} selected ${tab.toLowerCase()} entr${selectedIds.size!==1?"ies":"y"}?`)) return;
-    setFinancials(prev => prev.filter(f => !selectedIds.has(f.id)));
-    setSelectedIds(new Set());
-  }
 
   function save() {
     if(!form.amount||!form.description) return alert("Amount and description are required.");
     setFinancials(prev=>[{...form,id:uid(),amount:+form.amount},...prev]);
     setModal(false);
   }
-  function remove(id) { if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }
+  function remove(id) { finGate.request(()=>{ if(!window.confirm("Delete this entry?")) return; setFinancials(prev=>prev.filter(f=>f.id!==id)); }); }
 
 
   // ── Excel helpers ──────────────────────────────────────────────────────────
@@ -1702,18 +1737,13 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
   const EntryCard = ({f}) => {
     const linked = f.bookingId?bookings.find(b=>b.id===f.bookingId):null;
     const isIncome = f.type==="Income";
-    const isSelected = selectedIds.has(f.id);
     return (
-      <Card style={{padding:"12px 14px",background:isSelected?(isIncome?C.green+"0A":C.red+"0A"):C.surface,border:isSelected?`1.5px solid ${isIncome?C.green:C.red}`:undefined}}>
+      <Card style={{padding:"12px 14px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-          <div style={{display:"flex",gap:10,flex:1,minWidth:0}}>
-            <input type="checkbox" checked={isSelected} onChange={()=>toggleSelect(f.id)}
-              style={{marginTop:3,width:16,height:16,accentColor:isIncome?C.green:C.red,cursor:"pointer",flexShrink:0}} />
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:3,wordBreak:"break-word",color:C.text}}>{f.description}</div>
-              <div style={{fontSize:11,color:C.muted}}>{f.date} · {f.category} · {f.method}</div>
-              {linked&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>📎 {linked.client}</div>}
-            </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:600,fontSize:13,marginBottom:3,wordBreak:"break-word",color:C.text}}>{f.description}</div>
+            <div style={{fontSize:11,color:C.muted}}>{f.date} · {f.category} · {f.method}</div>
+            {linked&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>📎 {linked.client}</div>}
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
             <div style={{fontWeight:800,fontSize:15,fontVariantNumeric:"tabular-nums",color:isIncome?C.green:C.red}}>
@@ -1728,10 +1758,12 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
 
   return (
     <div style={{paddingBottom:isMobile?16:0}}>
+      {finGate.Gate}
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <h2 style={{margin:0,color:C.text,fontSize:isMobile?18:22}}>Financials</h2>
+          {financialsPwd&&finGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Unlocked</span>}
         </div>
       </div>
 
@@ -1754,7 +1786,7 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
       {/* Tab switcher */}
       <div style={{display:"flex",borderBottom:`2px solid ${C.border}`,marginBottom:16}}>
         {["Income","Expense"].map(t=>(
-          <div key={t} onClick={()=>{setTab(t);setSelectedIds(new Set());}}
+          <div key={t} onClick={()=>setTab(t)}
             style={{padding:"10px 20px",cursor:"pointer",fontWeight:700,fontSize:14,
               color:tab===t?(t==="Income"?C.green:C.red):C.muted,
               borderBottom:tab===t?`2px solid ${t==="Income"?C.green:C.red}`:"2px solid transparent",
@@ -1768,7 +1800,7 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
       {/* Tab toolbar */}
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
         <Btn variant={tab==="Income"?"success":"danger"} size="sm"
-          onClick={()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); }}>
+          onClick={()=>finGate.request(()=>{ setForm({...emptyEntry(),type:tab==="Income"?"Income":"Expense"}); setModal(true); })}>
           + Add {tab}
         </Btn>
         {tab==="Income" ? (<>
@@ -1782,23 +1814,6 @@ function Financials({ financials, setFinancials, bookings, isMobile }) {
         </>)}
         <span style={{marginLeft:"auto",fontSize:12,color:C.muted,alignSelf:"center"}}>{activeList.length} entries</span>
       </div>
-
-      {/* Select all + bulk delete bar */}
-      {activeList.length>0&&(
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,padding:"8px 12px",background:C.bg,borderRadius:8}}>
-          <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:13,fontWeight:600,color:C.text}}>
-            <input type="checkbox" checked={selectedIds.size===activeList.length&&activeList.length>0} onChange={toggleSelectAll}
-              style={{width:16,height:16,accentColor:C.navy,cursor:"pointer"}} />
-            Select All
-          </label>
-          {selectedIds.size>0&&(
-            <>
-              <span style={{fontSize:12,color:C.muted}}>{selectedIds.size} selected</span>
-              <Btn variant="danger" size="sm" onClick={bulkDelete} style={{marginLeft:"auto"}}>🗑 Delete Selected ({selectedIds.size})</Btn>
-            </>
-          )}
-        </div>
-      )}
 
       {/* Entry list */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -2244,10 +2259,10 @@ export default function App() {
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",overflowY:"auto",width:isMobile?"100%":undefined,minWidth:0}}>
         {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} />}
-        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} />}
+        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
         {page==="packages"   && <Packages    isMobile={isMobile} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
-        {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} />}
+        {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
         {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} onSave={manualSave} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPagePersist} theme={theme} setTheme={setTheme} onRefresh={manualRefresh} />}
