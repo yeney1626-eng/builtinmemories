@@ -13,8 +13,8 @@ async function gsFetch(action, data) {
   return res.json();
 }
 
-function useGoogleSync(bookings, financials, staffList, services, settings,
-  setBookings, setFinancials, setStaffList, setServices, setSettings) {
+function useGoogleSync(bookings, financials, staffList, services, packageRates, settings,
+  setBookings, setFinancials, setStaffList, setServices, setPackageRates, setSettings) {
   const saveTimer   = useRef(null);
   const loadStarted = useRef(false);
   const loadDone    = useRef(false);
@@ -32,8 +32,8 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
   }, []);
 
   // Always keep a ref to latest values so save closure captures current data
-  const latest = useRef({ bookings, financials, staffList, services, settings });
-  latest.current = { bookings, financials, staffList, services, settings };
+  const latest = useRef({ bookings, financials, staffList, services, packageRates, settings });
+  latest.current = { bookings, financials, staffList, services, packageRates, settings };
 
   function scheduleSave() {
     if (!loadDone.current) return;          // never save before load attempt finishes
@@ -47,10 +47,10 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
       const allDataEmpty = d.bookings.length === 0 && d.financials.length === 0 && d.staffList.length === 0;
       if (allDataEmpty && !hasData.current) {
         // Still allow saving settings-only changes even with no data yet
-        gsFetch("save", { bookings: [], financials: [], staffList: [], services: d.services, settings: d.settings }).catch(() => {});
+        gsFetch("save", { bookings: [], financials: [], staffList: [], services: d.services, packageRates: d.packageRates, settings: d.settings }).catch(() => {});
         return;
       }
-      gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, settings: d.settings }).catch(() => {});
+      gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, packageRates: d.packageRates, settings: d.settings }).catch(() => {});
     }, 2000);
   }
 
@@ -73,6 +73,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
         }
         if (d.staffList && Array.isArray(d.staffList) && d.staffList.length > 0) setStaffList(d.staffList);
         if (d.services  && Array.isArray(d.services)  && d.services.length > 0)  setServices(d.services);
+        if (d.packageRates && Array.isArray(d.packageRates) && d.packageRates.length > 0) setPackageRates(d.packageRates);
         if (d.settings  && typeof d.settings === "object") setSettings(d.settings);
         hasData.current = true;
       } else {
@@ -83,7 +84,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
   }, []);
 
   // Trigger save when data changes — but only after load+delay
-  useEffect(() => { scheduleSave(); }, [bookings, financials, staffList, services, settings.monthlyQuota, settings.passwords?.bookings, settings.passwords?.financials]);
+  useEffect(() => { scheduleSave(); }, [bookings, financials, staffList, services, packageRates, settings.monthlyQuota, settings.passwords?.bookings, settings.passwords?.financials]);
 
   async function restore() {
     const result = await gsFetch("load", {}).catch(() => ({ ok: false }));
@@ -93,6 +94,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
       if (Array.isArray(d.financials)) setFinancials(d.financials.map(f => ({ ...f, type: f.type === "Expense" ? "Expense" : "Income", amount: Math.abs(+f.amount || 0) })));
       if (Array.isArray(d.staffList))  setStaffList(d.staffList);
       if (Array.isArray(d.services))   setServices(d.services);
+      if (Array.isArray(d.packageRates)) setPackageRates(d.packageRates);
       if (d.settings && typeof d.settings === "object") setSettings(d.settings);
       hasData.current = true;
     } else {
@@ -105,7 +107,7 @@ function useGoogleSync(bookings, financials, staffList, services, settings,
   async function manualSave() {
     const d = latest.current;
     console.log("[BIM Sync] Manual save triggered. Bookings:", d.bookings.length, "Financials:", d.financials.length);
-    const result = await gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, settings: d.settings }).catch(err => { console.error("[BIM Sync] Manual save failed:", err); return { ok:false }; });
+    const result = await gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, packageRates: d.packageRates, settings: d.settings }).catch(err => { console.error("[BIM Sync] Manual save failed:", err); return { ok:false }; });
     console.log("[BIM Sync] Manual save result:", result);
     if (result.ok) alert("✅ Saved to Google Sheets successfully.");
     else alert("❌ Save failed. Check console for details.");
@@ -245,7 +247,7 @@ const SEED_FINANCIALS = [];
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const MONTHS_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DAYS_OF_WEEK = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-const CATEGORIES = ["Service Revenue","Transportation","Staff Salary","Registration","Supplies","Marketing","Other"];
+const CATEGORIES = ["Service Revenue","Add-ons","Transportation","Staff Salary","Registration","Supplies","Marketing","Other"];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 let _id = 200;
@@ -293,7 +295,7 @@ function usePasswordGate(correctPassword) {
   const callbackRef = useRef(null);
 
   function request(cb) {
-    if (unlocked) { cb(); return; }
+    if (unlocked || !correctPassword) { cb(); return; }
     callbackRef.current = cb;
     setPw(""); setErr(false); setShow(true);
   }
@@ -500,7 +502,7 @@ function BottomNav({ page, setPage, theme, setTheme, onRefresh }) {
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setMonthlyQuota }) {
+function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setMonthlyQuota, packageRates }) {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonthIdx = now.getMonth();
@@ -560,6 +562,11 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const monthIncome  = monthFin.filter(f=>f.type==="Income" ).reduce((s,f)=>s+f.amount,0);
   const monthExpense = monthFin.filter(f=>f.type==="Expense").reduce((s,f)=>s+f.amount,0);
   const monthNet     = monthIncome - monthExpense;
+  // Quota income excludes payments from cancelled+refunded bookings — a refunded
+  // cancellation shouldn't count toward the monthly sales quota since the money
+  // was given back to the client. Non-refundable cancellations are still counted
+  // since that revenue was retained.
+  const quotaIncome  = monthFin.filter(f=>f.type==="Income" && f.category!=="Cancellation Payment").reduce((s,f)=>s+f.amount,0);
 
   // Booking status groups
   const bkCompleted = bookings.filter(b=>b.status==="Completed");
@@ -575,9 +582,9 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const incManual    = financials.filter(f=>f.type==="Income"&&!f.bookingId).reduce((s,f)=>s+f.amount,0);
   const totalBookingIncome = incCompleted + incReserved + incManual;
 
-  // Quota progress
-  const quotaPct     = Math.min(100, Math.round((monthIncome / monthlyQuota) * 100));
-  const quotaRemaining = Math.max(0, monthlyQuota - monthIncome);
+  // Quota progress (refunded cancellations excluded — see quotaIncome above)
+  const quotaPct     = Math.min(100, Math.round((quotaIncome / monthlyQuota) * 100));
+  const quotaRemaining = Math.max(0, monthlyQuota - quotaIncome);
   const quotaColor   = quotaPct >= 100 ? C.green : quotaPct >= 60 ? C.amber : C.red;
 
   // Pending collections
@@ -587,7 +594,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
   const monthBookings = bookings.filter(b=>{ try{ const d=new Date(b.datetime); return b.status!=="Cancelled"&&!isNaN(d.getTime())&&d.getMonth()===selM&&d.getFullYear()===selY; }catch{return false;} }).length;
 
   // Package popularity from bookings
-  const pkgStats = SEED_PACKAGE_RATES.map(p=>p.name).filter((v,i,a)=>a.indexOf(v)===i).map(name => {
+  const pkgStats = (packageRates||SEED_PACKAGE_RATES).map(p=>p.name).filter((v,i,a)=>a.indexOf(v)===i).map(name => {
     const matches = bookings.filter(b => {
       const svcs = Array.isArray(b.services)&&b.services.length>0 ? b.services : (b.service?[b.service]:[]);
       return svcs.includes(name) && b.status !== "Cancelled";
@@ -761,7 +768,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
         {/* Progress bar */}
         <div style={{marginBottom:10}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
-            <span style={{fontSize:13,fontWeight:700,color:quotaColor}}>{currency(monthIncome)} earned</span>
+            <span style={{fontSize:13,fontWeight:700,color:quotaColor}}>{currency(quotaIncome)} earned</span>
             <span style={{fontSize:13,color:C.muted}}>{quotaPct}% of quota</span>
           </div>
           <div style={{height:14,background:C.border,borderRadius:8,overflow:"hidden"}}>
@@ -769,7 +776,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
           </div>
           <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
             {quotaPct>=100
-              ? <span style={{fontSize:12,color:C.green,fontWeight:700}}>🎉 Quota reached! {currency(monthIncome-monthlyQuota)} over target</span>
+              ? <span style={{fontSize:12,color:C.green,fontWeight:700}}>🎉 Quota reached! {currency(quotaIncome-monthlyQuota)} over target</span>
               : <span style={{fontSize:12,color:C.muted}}>{currency(quotaRemaining)} remaining to hit quota</span>
             }
             <span style={{fontSize:12,color:C.muted}}>Target: {currency(monthlyQuota)}</span>
@@ -781,6 +788,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
           <div style={{fontSize:12,color:C.muted}}>📈 Net: <strong style={{color:monthNet>=0?C.green:C.red}}>{currency(monthNet)}</strong></div>
           <div style={{fontSize:12,color:C.muted}}>💰 Pending collections: <strong style={{color:C.amber}}>{currency(pendingBalance)}</strong></div>
           <div style={{fontSize:12,color:C.muted}}>📅 {monthBookings} booking{monthBookings!==1?"s":""} this month</div>
+          {quotaIncome!==monthIncome && <div style={{fontSize:12,color:C.muted}}>↩ Refunded cancellations excluded from quota: <strong style={{color:C.red}}>{currency(monthIncome-quotaIncome)}</strong></div>}
         </div>
       </Card>
 
@@ -860,7 +868,7 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
 
 // ── Bookings ─────────────────────────────────────────────────────────────────
 function emptyBooking() {
-  return {client:"",phone:"",service:"",staff:"",services:[],staffIds:[],datetime:"",duration:240,status:"Reserved",notes:"",price:"",venue:"",eventType:"",pax:"",theme:"",paymentStatus:"Pending Balance",balance:"",reservationFee:"",cancelType:"",refundAmount:""};
+  return {client:"",phone:"",service:"",staff:"",services:[],staffIds:[],datetime:"",duration:240,status:"Reserved",notes:"",price:"",venue:"",eventType:"",pax:"",theme:"",paymentStatus:"Pending Balance",balance:"",reservationFee:"",cancelType:"",refundAmount:"",addons:[]};
 }
 
 // ── Sync booking-linked income (called only on explicit save/import/status change) ──
@@ -873,83 +881,156 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     f.type === "Income" && f.bookingId && bookingIds.has(f.bookingId)
   );
 
+  function upsert(bId, itemKind, amount, category, description, eventDate) {
+    const idx = bookingIncomeEntries.findIndex(f => f.bookingId === bId && (f.itemKind || "package") === itemKind);
+    if (amount <= 0) {
+      if (idx >= 0) bookingIncomeEntries.splice(idx, 1);
+      return;
+    }
+    if (idx >= 0) {
+      bookingIncomeEntries[idx] = { ...bookingIncomeEntries[idx], amount, description, category, date: eventDate, itemKind };
+    } else {
+      bookingIncomeEntries.push({ id: uid(), type: "Income", date: eventDate, category, description, amount, method: "Cash", bookingId: bId, itemKind });
+    }
+  }
+
   bookingsList.forEach(b => {
     if (b.status === "Cancelled") return;
     const price   = +b.price || 0;
     const balance = +b.balance || 0;
     const resFee  = +b.reservationFee || 0;
     const amtPaid = price - balance;
+    const addonsTotal  = Array.isArray(b.addons) ? b.addons.reduce((s,a)=>s+(+a.amount||0),0) : 0;
+    const packagePrice = Math.max(0, price - addonsTotal);
     const svcList = Array.isArray(b.services) && b.services.length>0 ? b.services : (b.service?[b.service]:[]);
     const svcLabel = svcList.join(" + ") || b.service || "";
     const staffIds = Array.isArray(b.staffIds) && b.staffIds.length>0 ? b.staffIds : (b.staff?[b.staff]:[]);
     const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
     const eventDate = b.datetime ? new Date(b.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
 
-    let incomeAmount = 0, category = "Service Revenue", description = "";
+    let incomeAmount = 0, category = "Service Revenue";
     if (b.status === "Completed") {
       if (price === 0) return;
       incomeAmount = price;
-      description = svcLabel + " \u2013 " + b.client + (staffNames ? " (" + staffNames + ")" : "");
     } else if (resFee > 0) {
       incomeAmount = resFee;
       category = "Reservation Fee";
-      description = "Reservation Fee \u2013 " + svcLabel + " (" + b.client + ")";
     } else if (amtPaid > 0) {
       incomeAmount = amtPaid;
       category = balance > 0 ? "Reservation Fee" : "Service Revenue";
-      description = balance > 0
-        ? "Reservation Fee \u2013 " + svcLabel + " (" + b.client + ")"
-        : svcLabel + " \u2013 " + b.client + (staffNames ? " (" + staffNames + ")" : "");
     } else {
       return;
     }
 
-    const existIdx = bookingIncomeEntries.findIndex(f => f.bookingId === b.id);
-    if (existIdx >= 0) {
-      bookingIncomeEntries[existIdx] = { ...bookingIncomeEntries[existIdx], amount: incomeAmount, description, category, date: eventDate };
-    } else {
-      bookingIncomeEntries.push({ id: uid(), type: "Income", date: eventDate, category, description, amount: incomeAmount, method: "Cash", bookingId: b.id });
-    }
+    // Recognize package vs. add-on income proportionally to what's actually been
+    // paid so far (full amount once fully paid/completed), then record them as
+    // two separate financial entries instead of one combined line item.
+    const ratio = price > 0 ? Math.min(1, incomeAmount / price) : 0;
+    const packageAmount = Math.round(packagePrice * ratio);
+    const addonsAmount  = Math.round(addonsTotal * ratio);
+
+    const packageDesc = category === "Reservation Fee"
+      ? "Reservation Fee \u2013 " + svcLabel + " (" + b.client + ")"
+      : svcLabel + " \u2013 " + b.client + (staffNames ? " (" + staffNames + ")" : "");
+    const addonNames = Array.isArray(b.addons) ? b.addons.map(a=>a.name).filter(Boolean).join(", ") : "";
+    const addonsDesc = "Add-ons" + (addonNames ? " (" + addonNames + ")" : "") + " \u2013 " + b.client;
+
+    upsert(b.id, "package", packageAmount, category, packageDesc, eventDate);
+    upsert(b.id, "addons",  addonsAmount,  "Add-ons", addonsDesc, eventDate);
   });
 
   return [...otherEntries, ...bookingIncomeEntries];
 }
 
-function BookingForm({ form, setForm, staffList, services, onSave, onCancel, title }) {
+function BookingForm({ form, setForm, staffList, services, packageRates, onSave, onCancel, title }) {
+  const rates = packageRates || SEED_PACKAGE_RATES;
   const selectedServices = Array.isArray(form.services) && form.services.length>0 ? form.services : (form.service?[form.service]:[]);
   const selectedStaffIds = Array.isArray(form.staffIds) && form.staffIds.length>0 ? form.staffIds : (form.staff?[form.staff]:[]);
   const resFee  = +form.reservationFee || 0;
   const balance = +form.balance || 0;
+  const addons  = Array.isArray(form.addons) ? form.addons : [];
+  const addonsTotal = addons.reduce((s,a)=>s+(+a.amount||0),0);
+
+  const [addonName, setAddonName]   = useState("");
+  const [addonAmount, setAddonAmount] = useState("");
 
   function calcAutoPrice(svcList, pax) {
     return svcList.reduce((sum, svc) => {
-      const match = SEED_PACKAGE_RATES.find(p => p.name === svc && p.pax === +pax);
+      const match = rates.find(p => p.name === svc && p.pax === +pax);
       return sum + (match ? match.rate : 0);
     }, 0);
   }
 
+  // Package total = base package rate (from selected services/pax) + add-ons
   const autoPrice = calcAutoPrice(selectedServices, form.pax);
-  const price = autoPrice > 0 ? autoPrice : (+form.price || 0);
+  const price = (autoPrice > 0 ? autoPrice : (+form.price || 0)) + addonsTotal;
   const amtPaid = price - balance;
+  // Same proportional split used when recording income, so the form shows
+  // exactly what will land in Financials as separate package/add-ons entries.
+  const packagePrice = Math.max(0, price - addonsTotal);
+  const payRatio     = price > 0 ? Math.min(1, Math.max(0, amtPaid) / price) : 0;
+  const packagePaid  = Math.round(packagePrice * payRatio);
+  const addonsPaid   = Math.round(addonsTotal * payRatio);
 
   const paxOptions = [...new Set(
-    SEED_PACKAGE_RATES.filter(p => selectedServices.includes(p.name)).map(p => p.pax)
+    rates.filter(p => selectedServices.includes(p.name)).map(p => p.pax)
   )].sort((a,b) => a-b);
+
+  function recalcPrice(svcList, pax, addonsList) {
+    const base = calcAutoPrice(svcList, pax);
+    const addonSum = (addonsList||addons).reduce((s,a)=>s+(+a.amount||0),0);
+    return base>0 ? base+addonSum : undefined; // undefined = leave manual price untouched
+  }
 
   function toggleService(svc) {
     const next = selectedServices.includes(svc) ? selectedServices.filter(s=>s!==svc) : [...selectedServices, svc];
-    const newPrice = calcAutoPrice(next, form.pax);
-    const newBal = Math.max(0, newPrice - resFee);
-    setForm({...form, services: next, service: next[0]||"", price: newPrice||form.price, balance: newPrice?newBal:form.balance});
+    const newPrice = recalcPrice(next, form.pax);
+    const newBal = Math.max(0, (newPrice??form.price) - resFee);
+    setForm({...form, services: next, service: next[0]||"", price: newPrice??form.price, balance: newPrice!==undefined?newBal:form.balance});
   }
   function toggleStaff(id) {
     const next = selectedStaffIds.includes(id) ? selectedStaffIds.filter(s=>s!==id) : [...selectedStaffIds, id];
     setForm({...form, staffIds: next, staff: next[0]||""});
   }
   function handlePaxChange(newPax) {
-    const newPrice = calcAutoPrice(selectedServices, newPax);
-    const newBal = Math.max(0, newPrice - resFee);
-    setForm({...form, pax:newPax, price:newPrice||form.price, balance:newPrice?newBal:form.balance});
+    const newPrice = recalcPrice(selectedServices, newPax);
+    const newBal = Math.max(0, (newPrice??form.price) - resFee);
+    setForm({...form, pax:newPax, price:newPrice??form.price, balance:newPrice!==undefined?newBal:form.balance});
+  }
+
+  function addAddon() {
+    const name = addonName.trim();
+    const amount = +addonAmount || 0;
+    if (!name || amount <= 0) return;
+    const newAddons = [...addons, { id: uid(), name, amount }];
+    const newPrice = recalcPrice(selectedServices, form.pax, newAddons);
+    const newBal = Math.max(0, (newPrice??((+form.price||0)+amount)) - resFee);
+    setForm({...form, addons: newAddons, price: newPrice ?? ((+form.price||0)+amount), balance: newBal});
+    setAddonName(""); setAddonAmount("");
+  }
+  function removeAddon(id) {
+    const removed = addons.find(a=>a.id===id);
+    const newAddons = addons.filter(a=>a.id!==id);
+    const newPrice = recalcPrice(selectedServices, form.pax, newAddons);
+    const fallback = Math.max(0, (+form.price||0) - (+removed?.amount||0));
+    const finalPrice = newPrice ?? fallback;
+    const newBal = Math.max(0, finalPrice - resFee);
+    setForm({...form, addons: newAddons, price: finalPrice, balance: newBal});
+  }
+
+  function handleStatusChange(newStatus) {
+    const patch = {
+      status: newStatus,
+      cancelType: newStatus!=="Cancelled" ? "" : form.cancelType,
+      refundAmount: newStatus!=="Cancelled" ? "" : form.refundAmount,
+    };
+    // Completing a booking means it's been paid in full — reflect that
+    // automatically instead of requiring a manual balance/status edit.
+    if (newStatus === "Completed") {
+      patch.balance = 0;
+      patch.paymentStatus = "Paid";
+    }
+    setForm({...form, ...patch});
   }
 
   return (
@@ -1009,7 +1090,7 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
           </div>
         </div>
 
-        <Select label="Booking Status" value={form.status} onChange={e=>setForm({...form,status:e.target.value,cancelType:e.target.value!=="Cancelled"?"":form.cancelType,refundAmount:e.target.value!=="Cancelled"?"":form.refundAmount})}>
+        <Select label="Booking Status" value={form.status} onChange={e=>handleStatusChange(e.target.value)}>
           {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s}>{s}</option>)}
         </Select>
 
@@ -1031,9 +1112,36 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
         )}
 
         <div style={{gridColumn:"span 2",background:C.bg,borderRadius:10,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+          <div style={{fontWeight:700,fontSize:13,color:C.navy,marginBottom:12,textTransform:"uppercase"}}>➕ Add-ons</div>
+          {addons.length>0 && (
+            <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:10}}>
+              {addons.map(a=>(
+                <div key={a.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px"}}>
+                  <span style={{fontSize:13,color:C.text}}>{a.name}</span>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:13,fontWeight:700,color:C.navy}}>₱{(+a.amount).toLocaleString()}</span>
+                    <Btn variant="ghost" size="sm" onClick={()=>removeAddon(a.id)} style={{padding:"2px 6px",fontSize:12,color:C.red}}>×</Btn>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+            <div style={{flex:2,minWidth:140}}>
+              <Input label="Add-on Name" value={addonName} onChange={e=>setAddonName(e.target.value)} placeholder="e.g. Extra Hour, Photobooth Props" />
+            </div>
+            <div style={{flex:1,minWidth:100}}>
+              <Input label="Amount (₱)" type="number" value={addonAmount} onChange={e=>setAddonAmount(e.target.value)} />
+            </div>
+            <Btn variant="outline" size="sm" onClick={addAddon} style={{marginBottom:1}}>+ Add</Btn>
+          </div>
+          {addonsTotal>0 && <div style={{fontSize:12,color:C.muted,marginTop:8}}>Add-ons total: <strong style={{color:C.navy}}>₱{addonsTotal.toLocaleString()}</strong> — automatically included in package total below</div>}
+        </div>
+
+        <div style={{gridColumn:"span 2",background:C.bg,borderRadius:10,padding:"14px 16px",border:`1px solid ${C.border}`}}>
           <div style={{fontWeight:700,fontSize:13,color:C.navy,marginBottom:12,textTransform:"uppercase"}}>💳 Payment</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Input label="Package Price (₱)" type="number" value={form.price} onChange={e=>setForm({...form,price:+e.target.value,balance:Math.max(0,(+e.target.value)-(+form.reservationFee||0))})} />
+            <Input label={addonsTotal>0?`Package Total (₱) — incl. ₱${addonsTotal.toLocaleString()} add-ons`:"Package Price (₱)"} type="number" value={form.price} onChange={e=>setForm({...form,price:+e.target.value,balance:Math.max(0,(+e.target.value)-(+form.reservationFee||0))})} />
             <Input label="Reservation Fee Paid (₱)" type="number" value={form.reservationFee||""} onChange={e=>setForm({...form,reservationFee:+e.target.value,balance:Math.max(0,(+form.price||0)-(+e.target.value||0))})} />
             <Input label="Balance (₱)" type="number" value={form.balance||""} onChange={e=>setForm({...form,balance:+e.target.value})} />
             <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>setForm({...form,paymentStatus:e.target.value})}>
@@ -1046,6 +1154,15 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
               <span style={{fontSize:12,background:C.green+"18",color:C.green,fontWeight:700,padding:"4px 10px",borderRadius:20}}>Paid: ₱{amtPaid.toLocaleString()}</span>
               {balance>0 && <span style={{fontSize:12,background:C.amber+"22",color:C.amber,fontWeight:700,padding:"4px 10px",borderRadius:20}}>Balance: ₱{balance.toLocaleString()}</span>}
               {balance===0 && price>0 && <span style={{fontSize:12,background:C.green+"18",color:C.green,fontWeight:700,padding:"4px 10px",borderRadius:20}}>✓ Fully Paid</span>}
+            </div>
+          )}
+          {addonsTotal>0 && price>0 && (
+            <div style={{marginTop:10,paddingTop:10,borderTop:`1px dashed ${C.border}`}}>
+              <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:6}}>Payment breakdown — what this payment is for</div>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                <span style={{fontSize:12,color:C.text}}>📦 Package: <strong style={{color:C.navy}}>₱{packagePaid.toLocaleString()}</strong> of ₱{packagePrice.toLocaleString()}</span>
+                <span style={{fontSize:12,color:C.text}}>➕ Add-ons: <strong style={{color:C.navy}}>₱{addonsPaid.toLocaleString()}</strong> of ₱{addonsTotal.toLocaleString()}</span>
+              </div>
             </div>
           )}
         </div>
@@ -1064,7 +1181,7 @@ function BookingForm({ form, setForm, staffList, services, onSave, onCancel, tit
   );
 }
 
-function Bookings({ bookings, setBookings, staffList, services, financials, setFinancials, isMobile, bookingsPwd }) {
+function Bookings({ bookings, setBookings, staffList, services, packageRates, financials, setFinancials, isMobile, bookingsPwd }) {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [modal, setModal]   = useState(null);
@@ -1096,16 +1213,19 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
       setFinancials(prev => {
         let updated = [...prev];
         if (amtPaid > 0) {
-          const idx = updated.findIndex(f=>f.type==="Income"&&f.bookingId===bId);
+          const existingIncome = updated.filter(f=>f.type==="Income"&&f.bookingId===bId);
+          const keepId = existingIncome[0]?.id || uid();
+          const keepMethod = existingIncome[0]?.method || "Cash";
+          updated = updated.filter(f=>!(f.type==="Income"&&f.bookingId===bId));
           const entry = {
-            id: idx>=0?updated[idx].id:uid(), type:"Income", date:cancelDate,
+            id: keepId, type:"Income", date:cancelDate,
             category: newBooking.cancelType==="non-refundable"?"Non-Refundable Cancellation":"Cancellation Payment",
-            bookingId: bId, amount: amtPaid, method: idx>=0?updated[idx].method:"Cash",
+            bookingId: bId, amount: amtPaid, method: keepMethod,
             description: newBooking.cancelType==="non-refundable"
               ? "Non-Refundable \u2013 " + svcLabel + " (" + newBooking.client + ")"
               : "Payment Received \u2013 " + svcLabel + " (" + newBooking.client + ")",
           };
-          if (idx>=0) updated[idx]=entry; else updated.push(entry);
+          updated.push(entry);
         } else {
           updated = updated.filter(f=>!(f.type==="Income"&&f.bookingId===bId));
         }
@@ -1405,7 +1525,7 @@ function Bookings({ bookings, setBookings, staffList, services, financials, setF
         </Card>
       )}
 
-      {modal&&<BookingForm form={form} setForm={setForm} staffList={staffList} services={services} onSave={save} onCancel={()=>setModal(null)} title={modal==="new"?"New Booking":"Edit Booking"} />}
+      {modal&&<BookingForm form={form} setForm={setForm} staffList={staffList} services={services} packageRates={packageRates} onSave={save} onCancel={()=>setModal(null)} title={modal==="new"?"New Booking":"Edit Booking"} />}
     </div>
   );
 }
@@ -1865,26 +1985,64 @@ const PKG_COLOR = {
   "Full Experience":            "#6B3FA0",
 };
 
-function emptyPackageRow(name="") {
-  return {id:"", name, pax:"", rate:"", extraPaxRate:"", hours:"3–4 hours", notes:"Includes setup, on-site assistance, and basic styling"};
+function emptyPackageRow(name="", seed={}) {
+  return {
+    id:"", name,
+    tiers:[{pax:"", rate:""}], // multiple pax/rate options can be added at once, e.g. 10 pax / 50 pax / 100 pax
+    extraPaxRate: seed.extraPaxRate!==undefined?String(seed.extraPaxRate):"",
+    hours: seed.hours!==undefined?seed.hours:"3–4 hours",
+    notes: seed.notes!==undefined?seed.notes:"Includes setup, on-site assistance, and basic styling",
+  };
 }
 
-function Packages({ isMobile }) {
-  const [packageRates, setPackageRates] = useState(SEED_PACKAGE_RATES);
+function Packages({ isMobile, packageRates, setPackageRates }) {
   const [modal, setModal] = useState(null); // null | "new" | row id
   const [form, setForm]   = useState(emptyPackageRow());
   const pkgGate = usePasswordGate("packages");
 
   const pkgNames = [...new Set(packageRates.map(r=>r.name))];
 
-  function openAdd(name) { pkgGate.request(()=>{ setForm(emptyPackageRow(name)); setModal("new"); }); }
-  function openEdit(r)   { pkgGate.request(()=>{ setForm({...r}); setModal(r.id); }); }
+  function openAdd(name) {
+    pkgGate.request(()=>{
+      const existing = packageRates.find(r=>r.name===name);
+      setForm(emptyPackageRow(name, existing||{}));
+      setModal("new");
+    });
+  }
+  function openNewPackage() { pkgGate.request(()=>{ setForm(emptyPackageRow("__new__")); setModal("new"); }); }
+  function openEdit(r) {
+    pkgGate.request(()=>{
+      setForm({ id:r.id, name:r.name, tiers:[{pax:String(r.pax), rate:String(r.rate)}], extraPaxRate:String(r.extraPaxRate||""), hours:r.hours||"", notes:r.notes||"" });
+      setModal(r.id);
+    });
+  }
   function doDelete(id)  { pkgGate.request(()=>{ if(!window.confirm("Delete this rate?")) return; setPackageRates(prev=>prev.filter(r=>r.id!==id)); }); }
 
+  function addTierRow()        { setForm({...form, tiers:[...form.tiers, {pax:"", rate:""}]}); }
+  function removeTierRow(idx)  { if(form.tiers.length<=1) return; setForm({...form, tiers: form.tiers.filter((_,i)=>i!==idx)}); }
+  function updateTier(idx, field, value) {
+    setForm({...form, tiers: form.tiers.map((t,i)=>i===idx?{...t,[field]:value}:t)});
+  }
+
   function save() {
-    if(!form.name||!form.pax||!form.rate) return alert("Name, Pax and Rate are required.");
+    // Keep `name` as the literal "__new__" sentinel while typing so the new-name
+    // input field doesn't unmount mid-keystroke; resolve the real name here.
+    const actualName = form.name==="__new__" ? (form._newName||"").trim() : form.name;
+    const validTiers = (form.tiers||[]).filter(t=>t.pax!==""&&t.rate!=="");
+    if(!actualName || validTiers.length===0) return alert("Package name and at least one Pax + Rate tier are required.");
     const isNew = modal==="new";
-    setPackageRates(prev=>isNew?[...prev,{...form,id:uid(),pax:+form.pax,rate:+form.rate,extraPaxRate:+form.extraPaxRate||0}]:prev.map(r=>r.id===modal?{...form,pax:+form.pax,rate:+form.rate,extraPaxRate:+form.extraPaxRate||0}:r));
+    const common = { name: actualName, extraPaxRate:+form.extraPaxRate||0, hours:form.hours, notes:form.notes };
+    setPackageRates(prev=>{
+      let updated = [...prev];
+      validTiers.forEach((t,i)=>{
+        if(!isNew && i===0) {
+          updated = updated.map(r=>r.id===modal?{...r,...common,pax:+t.pax,rate:+t.rate}:r);
+        } else {
+          updated = [...updated, { id:uid(), ...common, pax:+t.pax, rate:+t.rate }];
+        }
+      });
+      return updated;
+    });
     setModal(null);
   }
 
@@ -1898,7 +2056,8 @@ function Packages({ isMobile }) {
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {pkgGate.unlocked&&<span style={{fontSize:11,color:C.green,fontWeight:600}}>🔓 Edit unlocked</span>}
-          <Btn variant="amber" size="sm" onClick={()=>pkgGate.request(()=>{ setForm(emptyPackageRow(pkgNames[0]||"")); setModal("new"); })}>+ Add Rate</Btn>
+          <Btn variant="outline" size="sm" onClick={openNewPackage}>+ New Package</Btn>
+          <Btn variant="amber" size="sm" onClick={()=>pkgGate.request(()=>{ setForm(emptyPackageRow(pkgNames[0]||"__new__")); setModal("new"); })}>+ Add Rate</Btn>
         </div>
       </div>
 
@@ -1973,9 +2132,27 @@ function Packages({ isMobile }) {
               {pkgNames.map(n=><option key={n}>{n}</option>)}
               <option value="__new__">+ New package name…</option>
             </Select>
-            {form.name==="__new__"&&<Input label="New Package Name" value={form._newName||""} onChange={e=>setForm({...form,_newName:e.target.value,name:e.target.value})} style={{gridColumn:"span 2"}} />}
-            <Input label="Pax" type="number" value={form.pax} onChange={e=>setForm({...form,pax:e.target.value})} />
-            <Input label="Rate (₱)" type="number" value={form.rate} onChange={e=>setForm({...form,rate:e.target.value})} />
+            {/* Note: while form.name stays "__new__", typing here only updates _newName —
+                this keeps the field mounted instead of vanishing after the first keystroke. */}
+            {form.name==="__new__"&&<Input label="New Package Name" value={form._newName||""} onChange={e=>setForm({...form,_newName:e.target.value})} autoFocus style={{gridColumn:"span 2"}} />}
+
+            <div style={{gridColumn:"span 2"}}>
+              <label style={{fontSize:12,fontWeight:600,color:C.muted,textTransform:"uppercase",letterSpacing:"0.05em",display:"block",marginBottom:6}}>Pax &amp; Rate Options</label>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {form.tiers.map((t,idx)=>(
+                  <div key={idx} style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <input type="number" placeholder="Pax (e.g. 10)" value={t.pax} onChange={e=>updateTier(idx,"pax",e.target.value)}
+                      style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:14,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}} />
+                    <input type="number" placeholder="Rate (₱)" value={t.rate} onChange={e=>updateTier(idx,"rate",e.target.value)}
+                      style={{flex:1,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 12px",fontSize:14,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}} />
+                    <Btn variant="ghost" size="sm" onClick={()=>removeTierRow(idx)} disabled={form.tiers.length<=1} style={{padding:"4px 8px",fontSize:14,color:form.tiers.length<=1?C.muted:C.red}}>×</Btn>
+                  </div>
+                ))}
+              </div>
+              <Btn variant="outline" size="sm" onClick={addTierRow} style={{marginTop:8}}>+ Add another pax option</Btn>
+              <div style={{fontSize:11,color:C.muted,marginTop:6}}>e.g. add 10 pax, 50 pax, and 100 pax options for this package in one go</div>
+            </div>
+
             <Input label="Extra Pax Rate (₱)" type="number" value={form.extraPaxRate} onChange={e=>setForm({...form,extraPaxRate:e.target.value})} />
             <Input label="Hours" value={form.hours} onChange={e=>setForm({...form,hours:e.target.value})} />
             <Input label="Notes" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} style={{gridColumn:"span 2"}} />
@@ -2189,6 +2366,7 @@ export default function App() {
   const [staffList,  setStaffList]  = useState(SEED_STAFF);
   const [financials, setFinancials] = useState(SEED_FINANCIALS);
   const [services,   setServices]   = useState(SEED_SERVICES);
+  const [packageRates, setPackageRates] = useState(SEED_PACKAGE_RATES);
   const [theme,      setTheme]      = useState("light");
   const [passwords, setPasswords]   = useState({ bookings: null, financials: null });
   const [monthlyQuota, setMonthlyQuota] = useState(50000);
@@ -2221,8 +2399,8 @@ export default function App() {
     if (s.passwords !== undefined) setPasswords(s.passwords);
   }
   const { restore, manualRefresh, isLoading, manualSave } = useGoogleSync(
-    bookings, financials, staffList, services, settings,
-    setBookings, setFinancials, setStaffList, setServices, setSettings
+    bookings, financials, staffList, services, packageRates, settings,
+    setBookings, setFinancials, setStaffList, setServices, setPackageRates, setSettings
   );
 
   const themeObj = THEMES[theme] || THEMES.light;
@@ -2258,9 +2436,9 @@ export default function App() {
         </div>
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",overflowY:"auto",width:isMobile?"100%":undefined,minWidth:0}}>
-        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} />}
-        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
-        {page==="packages"   && <Packages    isMobile={isMobile} />}
+        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} packageRates={packageRates} />}
+        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} packageRates={packageRates} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
+        {page==="packages"   && <Packages    isMobile={isMobile} packageRates={packageRates} setPackageRates={setPackageRates} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
         {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} onSave={manualSave} />}
