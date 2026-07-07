@@ -1042,6 +1042,21 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
     setForm({...form, ...patch});
   }
 
+  function handlePaymentStatusChange(newStatus) {
+    const patch = { paymentStatus: newStatus };
+    // Financials are driven off the actual Balance (price - balance = amount
+    // paid). Picking "Paid" here didn't used to touch Balance at all, so a
+    // booking could show "Paid" while still carrying its full balance — and
+    // silently never register any income. Zero it out here so the two stay
+    // in sync, same as marking a booking Completed does.
+    if (newStatus === "Paid") {
+      patch.addons = addons.map(a=>({...a, paidAmount: +a.amount||0}));
+      patch.reservationFee = packagePrice;
+      patch.balance = 0;
+    }
+    setForm({...form, ...patch});
+  }
+
   return (
     <Modal title={title} onClose={onCancel} width={620}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
@@ -1164,7 +1179,7 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
             <Input label={addonsTotal>0?`Package Total (₱) — incl. ₱${addonsTotal.toLocaleString()} add-ons`:"Package Price (₱)"} type="number" value={form.price} onChange={e=>{const newPrice=+e.target.value; setForm({...form,price:newPrice,balance:computeBalance(newPrice,resFee,addons)});}} />
             <Input label="Reservation Fee Paid (₱)" type="number" value={form.reservationFee||""} onChange={e=>{const newResFee=+e.target.value; setForm({...form,reservationFee:newResFee,balance:computeBalance(price,newResFee,addons)});}} />
             <Input label="Balance (₱)" type="number" value={form.balance||""} onChange={e=>setForm({...form,balance:+e.target.value})} />
-            <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>setForm({...form,paymentStatus:e.target.value})}>
+            <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>handlePaymentStatusChange(e.target.value)}>
               <option value="">Select...</option>
               {["Paid","Pending Balance","Pending Reservation","Cancelled/Non-Refundable","Cancelled/Refunded"].map(s=><option key={s}>{s}</option>)}
             </Select>
