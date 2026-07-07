@@ -909,13 +909,13 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
     const eventDate = b.datetime ? new Date(b.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
 
-    // Total money actually collected (price - balance) is the source of truth.
-    // Add-ons take whatever's been explicitly marked paid on them; the package
-    // gets whatever's left of the total collected — so a booking's package
-    // income is never silently dropped just because the Reservation Fee field
-    // wasn't the one used to record the payment (e.g. balance edited directly).
+    // "Paid" and "Completed" are hard triggers for full income recognition —
+    // this is checked directly off status/paymentStatus rather than inferred
+    // from balance, so toggling the status back and forth can't leave income
+    // stuck at a stale/zeroed amount.
+    const isFullySettled = b.status === "Completed" || b.paymentStatus === "Paid";
     let packageAmount = 0, addonsAmount = 0, category = "Service Revenue";
-    if (b.status === "Completed") {
+    if (isFullySettled) {
       if (price === 0) return;
       packageAmount = packagePrice;
       addonsAmount  = addonsTotal;
