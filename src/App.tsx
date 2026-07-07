@@ -897,7 +897,8 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
   bookingsList.forEach(b => {
     if (b.status === "Cancelled") return;
     const price   = +b.price || 0;
-    const resFee  = +b.reservationFee || 0;
+    const balance = +b.balance || 0;
+    const amtPaid = Math.max(0, price - balance);
     const addonsList   = Array.isArray(b.addons) ? b.addons : [];
     const addonsTotal  = addonsList.reduce((s,a)=>s+(+a.amount||0),0);
     const packagePrice = Math.max(0, price - addonsTotal);
@@ -908,17 +909,19 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
     const eventDate = b.datetime ? new Date(b.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
 
-    // Package income comes from the Reservation Fee field; add-ons income comes
-    // from whichever specific add-ons have been checked off as paid — no more
-    // guessing via a proportional split.
+    // Total money actually collected (price - balance) is the source of truth.
+    // Add-ons take whatever's been explicitly marked paid on them; the package
+    // gets whatever's left of the total collected — so a booking's package
+    // income is never silently dropped just because the Reservation Fee field
+    // wasn't the one used to record the payment (e.g. balance edited directly).
     let packageAmount = 0, addonsAmount = 0, category = "Service Revenue";
     if (b.status === "Completed") {
       if (price === 0) return;
       packageAmount = packagePrice;
       addonsAmount  = addonsTotal;
-    } else if (resFee > 0 || addonsPaidAmount > 0) {
-      packageAmount = Math.min(resFee, packagePrice);
-      addonsAmount  = addonsPaidAmount;
+    } else if (amtPaid > 0 || addonsPaidAmount > 0) {
+      addonsAmount  = Math.min(addonsPaidAmount, addonsTotal, amtPaid);
+      packageAmount = Math.max(0, Math.min(amtPaid - addonsAmount, packagePrice));
       category = packageAmount < packagePrice ? "Reservation Fee" : "Service Revenue";
     } else {
       return;
