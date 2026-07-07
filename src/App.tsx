@@ -881,16 +881,19 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     f.type === "Income" && f.bookingId && bookingIds.has(f.bookingId)
   );
 
-  function upsert(bId, itemKind, amount, category, description, eventDate) {
+  function upsert(bId, itemKind, amount, category, description, fallbackDate) {
     const idx = bookingIncomeEntries.findIndex(f => f.bookingId === bId && (f.itemKind || "package") === itemKind);
     if (amount <= 0) {
       if (idx >= 0) bookingIncomeEntries.splice(idx, 1);
       return;
     }
     if (idx >= 0) {
-      bookingIncomeEntries[idx] = { ...bookingIncomeEntries[idx], amount, description, category, date: eventDate, itemKind };
+      // Keep the date it was first recorded as income — don't let it jump
+      // around (e.g. to the event date) just because the booking was
+      // re-saved or its status toggled again.
+      bookingIncomeEntries[idx] = { ...bookingIncomeEntries[idx], amount, description, category, itemKind };
     } else {
-      bookingIncomeEntries.push({ id: uid(), type: "Income", date: eventDate, category, description, amount, method: "Cash", bookingId: bId, itemKind });
+      bookingIncomeEntries.push({ id: uid(), type: "Income", date: fallbackDate, category, description, amount, method: "Cash", bookingId: bId, itemKind });
     }
   }
 
@@ -907,7 +910,12 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     const svcLabel = svcList.join(" + ") || b.service || "";
     const staffIds = Array.isArray(b.staffIds) && b.staffIds.length>0 ? b.staffIds : (b.staff?[b.staff]:[]);
     const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
-    const eventDate = b.datetime ? new Date(b.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+    // Income is recognized on the date it's actually recorded as paid (today,
+    // the first time it's marked so) — NOT the booking's event date. Otherwise
+    // a booking for a past (or future) event would file its income under that
+    // event's month, and never show up on the Dashboard for the month you
+    // actually collected the money in.
+    const recordedDate = new Date().toISOString().slice(0,10);
 
     // "Paid" and "Completed" are hard triggers for full income recognition —
     // this is checked directly off status/paymentStatus rather than inferred
@@ -933,8 +941,8 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     const paidAddonNames = addonsList.filter(a=>Math.min(+a.paidAmount||(a.paid?+a.amount||0:0), +a.amount||0)>0).map(a=>a.name).filter(Boolean).join(", ");
     const addonsDesc = "Add-ons" + (paidAddonNames ? " (" + paidAddonNames + ")" : "") + " \u2013 " + b.client;
 
-    upsert(b.id, "package", packageAmount, category, packageDesc, eventDate);
-    upsert(b.id, "addons",  addonsAmount,  "Add-ons", addonsDesc, eventDate);
+    upsert(b.id, "package", packageAmount, category, packageDesc, recordedDate);
+    upsert(b.id, "addons",  addonsAmount,  "Add-ons", addonsDesc, recordedDate);
   });
 
   return [...otherEntries, ...bookingIncomeEntries];
