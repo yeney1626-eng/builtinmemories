@@ -897,43 +897,38 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
   bookingsList.forEach(b => {
     if (b.status === "Cancelled") return;
     const price   = +b.price || 0;
-    const balance = +b.balance || 0;
     const resFee  = +b.reservationFee || 0;
-    const amtPaid = price - balance;
-    const addonsTotal  = Array.isArray(b.addons) ? b.addons.reduce((s,a)=>s+(+a.amount||0),0) : 0;
+    const addonsList   = Array.isArray(b.addons) ? b.addons : [];
+    const addonsTotal  = addonsList.reduce((s,a)=>s+(+a.amount||0),0);
     const packagePrice = Math.max(0, price - addonsTotal);
+    const addonsPaidAmount = addonsList.reduce((s,a)=>s+Math.min(+a.paidAmount||(a.paid?+a.amount||0:0), +a.amount||0),0);
     const svcList = Array.isArray(b.services) && b.services.length>0 ? b.services : (b.service?[b.service]:[]);
     const svcLabel = svcList.join(" + ") || b.service || "";
     const staffIds = Array.isArray(b.staffIds) && b.staffIds.length>0 ? b.staffIds : (b.staff?[b.staff]:[]);
     const staffNames = staffIds.map(id=>staffList.find(s=>s.id===id)?.name||"").filter(Boolean).join(", ");
     const eventDate = b.datetime ? new Date(b.datetime).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
 
-    let incomeAmount = 0, category = "Service Revenue";
+    // Package income comes from the Reservation Fee field; add-ons income comes
+    // from whichever specific add-ons have been checked off as paid — no more
+    // guessing via a proportional split.
+    let packageAmount = 0, addonsAmount = 0, category = "Service Revenue";
     if (b.status === "Completed") {
       if (price === 0) return;
-      incomeAmount = price;
-    } else if (resFee > 0) {
-      incomeAmount = resFee;
-      category = "Reservation Fee";
-    } else if (amtPaid > 0) {
-      incomeAmount = amtPaid;
-      category = balance > 0 ? "Reservation Fee" : "Service Revenue";
+      packageAmount = packagePrice;
+      addonsAmount  = addonsTotal;
+    } else if (resFee > 0 || addonsPaidAmount > 0) {
+      packageAmount = Math.min(resFee, packagePrice);
+      addonsAmount  = addonsPaidAmount;
+      category = packageAmount < packagePrice ? "Reservation Fee" : "Service Revenue";
     } else {
       return;
     }
 
-    // Recognize package vs. add-on income proportionally to what's actually been
-    // paid so far (full amount once fully paid/completed), then record them as
-    // two separate financial entries instead of one combined line item.
-    const ratio = price > 0 ? Math.min(1, incomeAmount / price) : 0;
-    const packageAmount = Math.round(packagePrice * ratio);
-    const addonsAmount  = Math.round(addonsTotal * ratio);
-
     const packageDesc = category === "Reservation Fee"
       ? "Reservation Fee \u2013 " + svcLabel + " (" + b.client + ")"
       : svcLabel + " \u2013 " + b.client + (staffNames ? " (" + staffNames + ")" : "");
-    const addonNames = Array.isArray(b.addons) ? b.addons.map(a=>a.name).filter(Boolean).join(", ") : "";
-    const addonsDesc = "Add-ons" + (addonNames ? " (" + addonNames + ")" : "") + " \u2013 " + b.client;
+    const paidAddonNames = addonsList.filter(a=>Math.min(+a.paidAmount||(a.paid?+a.amount||0:0), +a.amount||0)>0).map(a=>a.name).filter(Boolean).join(", ");
+    const addonsDesc = "Add-ons" + (paidAddonNames ? " (" + paidAddonNames + ")" : "") + " \u2013 " + b.client;
 
     upsert(b.id, "package", packageAmount, category, packageDesc, eventDate);
     upsert(b.id, "addons",  addonsAmount,  "Add-ons", addonsDesc, eventDate);
@@ -963,59 +958,68 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
 
   // Package total = base package rate (from selected services/pax) + add-ons
   const autoPrice = calcAutoPrice(selectedServices, form.pax);
-  const price = (autoPrice > 0 ? autoPrice : (+form.price || 0)) + addonsTotal;
+  const packagePrice = autoPrice > 0 ? autoPrice : Math.max(0, (+form.price || 0) - addonsTotal);
+  const price = packagePrice + addonsTotal;
   const amtPaid = price - balance;
-  // Same proportional split used when recording income, so the form shows
-  // exactly what will land in Financials as separate package/add-ons entries.
-  const packagePrice = Math.max(0, price - addonsTotal);
-  const payRatio     = price > 0 ? Math.min(1, Math.max(0, amtPaid) / price) : 0;
-  const packagePaid  = Math.round(packagePrice * payRatio);
-  const addonsPaid   = Math.round(addonsTotal * payRatio);
+  function paidOf(a) { return Math.min(+a.paidAmount || (a.paid ? +a.amount||0 : 0), +a.amount||0); }
+  // Reservation Fee = what's been paid toward the package. Each add-on has its
+  // own "how much was paid" input, so partial add-on payments are tracked
+  // precisely instead of assumed via a proportional split.
+  const addonsPaidAmount = addons.reduce((s,a)=>s+paidOf(a),0);
+  const packagePaid = Math.min(resFee, packagePrice);
+  const addonsPaid  = addonsPaidAmount;
 
   const paxOptions = [...new Set(
     rates.filter(p => selectedServices.includes(p.name)).map(p => p.pax)
   )].sort((a,b) => a-b);
 
-  function recalcPrice(svcList, pax, addonsList) {
-    const base = calcAutoPrice(svcList, pax);
-    const addonSum = (addonsList||addons).reduce((s,a)=>s+(+a.amount||0),0);
-    return base>0 ? base+addonSum : undefined; // undefined = leave manual price untouched
+  function computeBalance(priceVal, resFeeVal, addonsList) {
+    const paidAddons = (addonsList||addons).reduce((s,a)=>s+paidOf(a),0);
+    return Math.max(0, priceVal - resFeeVal - paidAddons);
   }
 
   function toggleService(svc) {
     const next = selectedServices.includes(svc) ? selectedServices.filter(s=>s!==svc) : [...selectedServices, svc];
-    const newPrice = recalcPrice(next, form.pax);
-    const newBal = Math.max(0, (newPrice??form.price) - resFee);
-    setForm({...form, services: next, service: next[0]||"", price: newPrice??form.price, balance: newPrice!==undefined?newBal:form.balance});
+    const newBase = calcAutoPrice(next, form.pax);
+    const newPackagePrice = newBase>0 ? newBase : packagePrice;
+    const newPrice = newPackagePrice + addonsTotal;
+    setForm({...form, services: next, service: next[0]||"", price: newPrice, balance: computeBalance(newPrice, resFee, addons)});
   }
   function toggleStaff(id) {
     const next = selectedStaffIds.includes(id) ? selectedStaffIds.filter(s=>s!==id) : [...selectedStaffIds, id];
     setForm({...form, staffIds: next, staff: next[0]||""});
   }
   function handlePaxChange(newPax) {
-    const newPrice = recalcPrice(selectedServices, newPax);
-    const newBal = Math.max(0, (newPrice??form.price) - resFee);
-    setForm({...form, pax:newPax, price:newPrice??form.price, balance:newPrice!==undefined?newBal:form.balance});
+    const newBase = calcAutoPrice(selectedServices, newPax);
+    const newPackagePrice = newBase>0 ? newBase : packagePrice;
+    const newPrice = newPackagePrice + addonsTotal;
+    setForm({...form, pax:newPax, price:newPrice, balance: computeBalance(newPrice, resFee, addons)});
   }
 
   function addAddon() {
     const name = addonName.trim();
     const amount = +addonAmount || 0;
     if (!name || amount <= 0) return;
-    const newAddons = [...addons, { id: uid(), name, amount }];
-    const newPrice = recalcPrice(selectedServices, form.pax, newAddons);
-    const newBal = Math.max(0, (newPrice??((+form.price||0)+amount)) - resFee);
-    setForm({...form, addons: newAddons, price: newPrice ?? ((+form.price||0)+amount), balance: newBal});
+    const newAddons = [...addons, { id: uid(), name, amount, paidAmount:0 }];
+    const newAddonsTotal = newAddons.reduce((s,a)=>s+(+a.amount||0),0);
+    const newPrice = packagePrice + newAddonsTotal;
+    setForm({...form, addons: newAddons, price: newPrice, balance: computeBalance(newPrice, resFee, newAddons)});
     setAddonName(""); setAddonAmount("");
   }
   function removeAddon(id) {
-    const removed = addons.find(a=>a.id===id);
     const newAddons = addons.filter(a=>a.id!==id);
-    const newPrice = recalcPrice(selectedServices, form.pax, newAddons);
-    const fallback = Math.max(0, (+form.price||0) - (+removed?.amount||0));
-    const finalPrice = newPrice ?? fallback;
-    const newBal = Math.max(0, finalPrice - resFee);
-    setForm({...form, addons: newAddons, price: finalPrice, balance: newBal});
+    const newAddonsTotal = newAddons.reduce((s,a)=>s+(+a.amount||0),0);
+    const newPrice = packagePrice + newAddonsTotal;
+    setForm({...form, addons: newAddons, price: newPrice, balance: computeBalance(newPrice, resFee, newAddons)});
+  }
+  function updateAddonPaid(id, value) {
+    const raw = value === "" ? 0 : (+value || 0);
+    const newAddons = addons.map(a=>a.id===id ? {...a, paidAmount: Math.max(0, Math.min(raw, +a.amount||0))} : a);
+    setForm({...form, addons: newAddons, balance: computeBalance(price, resFee, newAddons)});
+  }
+  function markAddonFullyPaid(id) {
+    const newAddons = addons.map(a=>a.id===id ? {...a, paidAmount: +a.amount||0} : a);
+    setForm({...form, addons: newAddons, balance: computeBalance(price, resFee, newAddons)});
   }
 
   function handleStatusChange(newStatus) {
@@ -1027,6 +1031,8 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
     // Completing a booking means it's been paid in full — reflect that
     // automatically instead of requiring a manual balance/status edit.
     if (newStatus === "Completed") {
+      patch.addons = addons.map(a=>({...a, paidAmount: +a.amount||0}));
+      patch.reservationFee = packagePrice;
       patch.balance = 0;
       patch.paymentStatus = "Paid";
     }
@@ -1115,15 +1121,26 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
           <div style={{fontWeight:700,fontSize:13,color:C.navy,marginBottom:12,textTransform:"uppercase"}}>➕ Add-ons</div>
           {addons.length>0 && (
             <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:10}}>
-              {addons.map(a=>(
-                <div key={a.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px"}}>
-                  <span style={{fontSize:13,color:C.text}}>{a.name}</span>
+              {addons.map(a=>{
+                const paid = paidOf(a);
+                const full = paid >= (+a.amount||0) && (+a.amount||0) > 0;
+                const partial = paid > 0 && !full;
+                return (
+                <div key={a.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 10px",flexWrap:"wrap"}}>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,color:C.text}}>{a.name}</div>
+                    <div style={{fontSize:11,color:C.muted}}>Total: ₱{(+a.amount).toLocaleString()}</div>
+                  </div>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:13,fontWeight:700,color:C.navy}}>₱{(+a.amount).toLocaleString()}</span>
-                    <Btn variant="ghost" size="sm" onClick={()=>removeAddon(a.id)} style={{padding:"2px 6px",fontSize:12,color:C.red}}>×</Btn>
+                    {full && <span style={{fontSize:10,fontWeight:700,color:C.green,background:C.green+"18",padding:"2px 8px",borderRadius:20}}>PAID</span>}
+                    {partial && <span style={{fontSize:10,fontWeight:700,color:C.amber,background:C.amber+"22",padding:"2px 8px",borderRadius:20}}>PARTIAL</span>}
+                    <input type="number" placeholder="Paid ₱" value={a.paidAmount||""} onChange={e=>updateAddonPaid(a.id,e.target.value)}
+                      style={{width:90,border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 8px",fontSize:13,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}} />
+                    <Btn variant="ghost" size="sm" onClick={()=>markAddonFullyPaid(a.id)} disabled={full} style={{padding:"4px 8px",fontSize:11,color:full?C.muted:C.navy}}>Full</Btn>
+                    <Btn variant="ghost" size="sm" onClick={()=>removeAddon(a.id)} style={{padding:"4px 8px",fontSize:12,color:C.red}}>×</Btn>
                   </div>
                 </div>
-              ))}
+              );})}
             </div>
           )}
           <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
@@ -1135,14 +1152,14 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
             </div>
             <Btn variant="outline" size="sm" onClick={addAddon} style={{marginBottom:1}}>+ Add</Btn>
           </div>
-          {addonsTotal>0 && <div style={{fontSize:12,color:C.muted,marginTop:8}}>Add-ons total: <strong style={{color:C.navy}}>₱{addonsTotal.toLocaleString()}</strong> — automatically included in package total below</div>}
+          {addonsTotal>0 && <div style={{fontSize:12,color:C.muted,marginTop:8}}>Add-ons total: <strong style={{color:C.navy}}>₱{addonsTotal.toLocaleString()}</strong> — automatically included in package total below. Enter how much has been paid for each add-on (or tap "Full").</div>}
         </div>
 
         <div style={{gridColumn:"span 2",background:C.bg,borderRadius:10,padding:"14px 16px",border:`1px solid ${C.border}`}}>
           <div style={{fontWeight:700,fontSize:13,color:C.navy,marginBottom:12,textTransform:"uppercase"}}>💳 Payment</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Input label={addonsTotal>0?`Package Total (₱) — incl. ₱${addonsTotal.toLocaleString()} add-ons`:"Package Price (₱)"} type="number" value={form.price} onChange={e=>setForm({...form,price:+e.target.value,balance:Math.max(0,(+e.target.value)-(+form.reservationFee||0))})} />
-            <Input label="Reservation Fee Paid (₱)" type="number" value={form.reservationFee||""} onChange={e=>setForm({...form,reservationFee:+e.target.value,balance:Math.max(0,(+form.price||0)-(+e.target.value||0))})} />
+            <Input label={addonsTotal>0?`Package Total (₱) — incl. ₱${addonsTotal.toLocaleString()} add-ons`:"Package Price (₱)"} type="number" value={form.price} onChange={e=>{const newPrice=+e.target.value; setForm({...form,price:newPrice,balance:computeBalance(newPrice,resFee,addons)});}} />
+            <Input label="Reservation Fee Paid (₱)" type="number" value={form.reservationFee||""} onChange={e=>{const newResFee=+e.target.value; setForm({...form,reservationFee:newResFee,balance:computeBalance(price,newResFee,addons)});}} />
             <Input label="Balance (₱)" type="number" value={form.balance||""} onChange={e=>setForm({...form,balance:+e.target.value})} />
             <Select label="Payment Status" value={form.paymentStatus||""} onChange={e=>setForm({...form,paymentStatus:e.target.value})}>
               <option value="">Select...</option>
@@ -1156,13 +1173,19 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
               {balance===0 && price>0 && <span style={{fontSize:12,background:C.green+"18",color:C.green,fontWeight:700,padding:"4px 10px",borderRadius:20}}>✓ Fully Paid</span>}
             </div>
           )}
-          {addonsTotal>0 && price>0 && (
+          {(resFee>0 || addonsTotal>0) && price>0 && (
             <div style={{marginTop:10,paddingTop:10,borderTop:`1px dashed ${C.border}`}}>
               <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.04em",marginBottom:6}}>Payment breakdown — what this payment is for</div>
-              <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                <span style={{fontSize:12,color:C.text}}>📦 Package: <strong style={{color:C.navy}}>₱{packagePaid.toLocaleString()}</strong> of ₱{packagePrice.toLocaleString()}</span>
-                <span style={{fontSize:12,color:C.text}}>➕ Add-ons: <strong style={{color:C.navy}}>₱{addonsPaid.toLocaleString()}</strong> of ₱{addonsTotal.toLocaleString()}</span>
+              <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:addons.length>0?6:0}}>
+                <span style={{fontSize:12,color:C.text}}>📦 Reservation Fee: <strong style={{color:C.navy}}>₱{packagePaid.toLocaleString()}</strong> of ₱{packagePrice.toLocaleString()} package</span>
+                {addonsTotal>0 && <span style={{fontSize:12,color:C.text}}>➕ Add-ons Paid: <strong style={{color:C.navy}}>₱{addonsPaid.toLocaleString()}</strong> of ₱{addonsTotal.toLocaleString()}</span>}
               </div>
+              {addons.length>0 && (
+                <div style={{fontSize:11,color:C.muted}}>
+                  {addons.filter(a=>paidOf(a)>0).length>0 && <div>✓ Paid: {addons.filter(a=>paidOf(a)>0).map(a=>`${a.name} (₱${paidOf(a).toLocaleString()}${paidOf(a)<(+a.amount||0)?` of ₱${(+a.amount).toLocaleString()}`:""})`).join(", ")}</div>}
+                  {addons.filter(a=>paidOf(a)===0).length>0 && <div>○ Not yet paid: {addons.filter(a=>paidOf(a)===0).map(a=>a.name).join(", ")}</div>}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1184,17 +1207,38 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
 function Bookings({ bookings, setBookings, staffList, services, packageRates, financials, setFinancials, isMobile, bookingsPwd }) {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState("datetime");
+  const [sortDir, setSortDir] = useState("desc"); // "asc" | "desc"
   const [modal, setModal]   = useState(null);
   const [form,  setForm]    = useState(emptyBooking());
   const [selectedIds, setSelectedIds] = useState(new Set());
   const bookingGate = usePasswordGate(bookingsPwd);
+
+  function toggleSort(key, defaultDir) {
+    if (sortKey === key) setSortDir(d => d==="asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(defaultDir); }
+  }
+  function sortArrow(key) { return sortKey===key ? (sortDir==="asc" ? " ↑" : " ↓") : ""; }
 
   const filtered = bookings.filter(b=>{
     const matchStatus = filter==="All"||b.status===filter;
     const svcLabel = (Array.isArray(b.services)&&b.services.length>0?b.services.join(" "):b.service||"");
     const matchSearch = b.client.toLowerCase().includes(search.toLowerCase())||svcLabel.toLowerCase().includes(search.toLowerCase());
     return matchStatus&&matchSearch;
-  }).sort((a,b)=>new Date(b.datetime).getTime()-new Date(a.datetime).getTime());
+  }).sort((a,b)=>{
+    const dir = sortDir==="asc" ? 1 : -1;
+    let av, bv;
+    switch(sortKey) {
+      case "client":  av=(a.client||"").toLowerCase(); bv=(b.client||"").toLowerCase(); break;
+      case "price":   av=+a.price||0; bv=+b.price||0; break;
+      case "balance": av=+a.balance||0; bv=+b.balance||0; break;
+      case "status":  av=(a.status||"").toLowerCase(); bv=(b.status||"").toLowerCase(); break;
+      default:        av=new Date(a.datetime).getTime()||0; bv=new Date(b.datetime).getTime()||0;
+    }
+    if (av<bv) return -1*dir;
+    if (av>bv) return 1*dir;
+    return 0;
+  });
 
   function openNew()   { setForm({...emptyBooking(), id: genBookingId(bookings)}); setModal("new"); }
   function openEdit(b) { bookingGate.request(()=>{ setForm({...b}); setModal(b.id); }); }
@@ -1398,12 +1442,21 @@ function Bookings({ bookings, setBookings, staffList, services, packageRates, fi
         </div>
       )}
 
-      <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"nowrap",overflowX:"auto",paddingBottom:2,WebkitOverflowScrolling:"touch"}}>
+      <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"nowrap",overflowX:"auto",paddingBottom:2,WebkitOverflowScrolling:"touch"}}>
         <input placeholder="Search client or service…" value={search} onChange={e=>setSearch(e.target.value)}
           style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 14px",fontSize:14,flex:1,minWidth:180,fontFamily:"inherit"}} />
         {["All","Reserved","Inquiry","Completed","Cancelled"].map(s=>(
           <Btn key={s} variant={filter===s?"primary":"outline"} size="sm" onClick={()=>setFilter(s)}>{s}</Btn>
         ))}
+      </div>
+
+      <div style={{display:"flex",gap:6,marginBottom:18,alignItems:"center",flexWrap:"wrap"}}>
+        <span style={{fontSize:12,color:C.muted,fontWeight:600,marginRight:2}}>Sort by:</span>
+        <Btn variant={sortKey==="datetime"?"primary":"outline"} size="sm" onClick={()=>toggleSort("datetime","desc")}>Date{sortArrow("datetime")}</Btn>
+        <Btn variant={sortKey==="client"?"primary":"outline"}   size="sm" onClick={()=>toggleSort("client","asc")}>Client{sortArrow("client")}</Btn>
+        <Btn variant={sortKey==="price"?"primary":"outline"}    size="sm" onClick={()=>toggleSort("price","desc")}>Price{sortArrow("price")}</Btn>
+        <Btn variant={sortKey==="balance"?"primary":"outline"}  size="sm" onClick={()=>toggleSort("balance","desc")}>Balance{sortArrow("balance")}</Btn>
+        <Btn variant={sortKey==="status"?"primary":"outline"}   size="sm" onClick={()=>toggleSort("status","asc")}>Status{sortArrow("status")}</Btn>
       </div>
 
       {isMobile ? (
@@ -1748,12 +1801,34 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
   const [tab,    setTab]   = useState("Income");  // "Income" | "Expense"
   const [modal,  setModal] = useState(false);
   const [form,   setForm]  = useState(emptyEntry());
+  const [sortKey, setSortKey] = useState("date");
+  const [sortDir, setSortDir] = useState("desc"); // "asc" | "desc"
   const importIncRef  = useRef(null);
   const importExpRef  = useRef(null);
   const finGate = usePasswordGate(financialsPwd);
 
-  const incomeList  = financials.filter(f=>f.type==="Income" ).sort((a,b)=>new Date(b.date).getTime()-new Date(a.date).getTime());
-  const expenseList = financials.filter(f=>f.type==="Expense").sort((a,b)=>new Date(b.date).getTime()-new Date(a.date).getTime());
+  function toggleSort(key, defaultDir) {
+    if (sortKey === key) setSortDir(d => d==="asc" ? "desc" : "asc");
+    else { setSortKey(key); setSortDir(defaultDir); }
+  }
+  function sortArrow(key) { return sortKey===key ? (sortDir==="asc" ? " ↑" : " ↓") : ""; }
+  function sortEntries(list) {
+    const dir = sortDir==="asc" ? 1 : -1;
+    return [...list].sort((a,b)=>{
+      let av, bv;
+      switch(sortKey) {
+        case "amount":   av=+a.amount||0; bv=+b.amount||0; break;
+        case "category": av=(a.category||"").toLowerCase(); bv=(b.category||"").toLowerCase(); break;
+        default:         av=new Date(a.date).getTime()||0; bv=new Date(b.date).getTime()||0;
+      }
+      if (av<bv) return -1*dir;
+      if (av>bv) return 1*dir;
+      return 0;
+    });
+  }
+
+  const incomeList  = sortEntries(financials.filter(f=>f.type==="Income" ));
+  const expenseList = sortEntries(financials.filter(f=>f.type==="Expense"));
   const totalIncome  = incomeList.reduce((s,f)=>s+f.amount,0);
   const totalExpense = expenseList.reduce((s,f)=>s+f.amount,0);
   const activeList   = tab==="Income" ? incomeList : expenseList;
@@ -1933,6 +2008,13 @@ function Financials({ financials, setFinancials, bookings, isMobile, financialsP
           <input ref={importExpRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={handleImportExpense} />
         </>)}
         <span style={{marginLeft:"auto",fontSize:12,color:C.muted,alignSelf:"center"}}>{activeList.length} entries</span>
+      </div>
+
+      <div style={{display:"flex",gap:6,marginBottom:16,alignItems:"center",flexWrap:"wrap"}}>
+        <span style={{fontSize:12,color:C.muted,fontWeight:600,marginRight:2}}>Sort by:</span>
+        <Btn variant={sortKey==="date"?"primary":"outline"}     size="sm" onClick={()=>toggleSort("date","desc")}>Date{sortArrow("date")}</Btn>
+        <Btn variant={sortKey==="amount"?"primary":"outline"}   size="sm" onClick={()=>toggleSort("amount","desc")}>Amount{sortArrow("amount")}</Btn>
+        <Btn variant={sortKey==="category"?"primary":"outline"} size="sm" onClick={()=>toggleSort("category","asc")}>Category{sortArrow("category")}</Btn>
       </div>
 
       {/* Entry list */}
