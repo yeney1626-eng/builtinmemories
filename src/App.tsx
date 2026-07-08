@@ -917,23 +917,26 @@ function syncIncomeForBookings(bookingsList, prevFinancials, staffList) {
     // actually collected the money in.
     const recordedDate = new Date().toISOString().slice(0,10);
 
-    // "Paid" and "Completed" are hard triggers for full income recognition —
-    // this is checked directly off status/paymentStatus rather than inferred
-    // from balance, so toggling the status back and forth can't leave income
-    // stuck at a stale/zeroed amount.
+    // "Paid" and "Completed" are hard triggers for full PACKAGE income
+    // recognition — checked directly off status/paymentStatus rather than
+    // inferred from balance, so toggling the status back and forth can't
+    // leave income stuck at a stale/zeroed amount.
+    //
+    // Add-ons are deliberately NOT covered by that override: their income
+    // always comes straight from each add-on's own explicit paid amount.
+    // Otherwise, marking a booking "Paid" and then adding a new add-on
+    // afterward would silently count that new (unpaid) add-on as paid too.
     const isFullySettled = b.status === "Completed" || b.paymentStatus === "Paid";
-    let packageAmount = 0, addonsAmount = 0, category = "Service Revenue";
+    const addonsAmount = Math.min(addonsPaidAmount, addonsTotal);
+    let packageAmount, category;
     if (isFullySettled) {
-      if (price === 0) return;
       packageAmount = packagePrice;
-      addonsAmount  = addonsTotal;
-    } else if (amtPaid > 0 || addonsPaidAmount > 0) {
-      addonsAmount  = Math.min(addonsPaidAmount, addonsTotal, amtPaid);
+      category = "Service Revenue";
+    } else {
       packageAmount = Math.max(0, Math.min(amtPaid - addonsAmount, packagePrice));
       category = packageAmount < packagePrice ? "Reservation Fee" : "Service Revenue";
-    } else {
-      return;
     }
+    if (packageAmount <= 0 && addonsAmount <= 0) return;
 
     const packageDesc = category === "Reservation Fee"
       ? "Reservation Fee \u2013 " + svcLabel + " (" + b.client + ")"
