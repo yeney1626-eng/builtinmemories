@@ -2376,10 +2376,12 @@ function PasswordSetting({ label, description, currentPwd, onSave }) {
   );
 }
 
-function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore, onSave }) {
+function Settings({ services, setServices, passwords, setPasswords, bookings, financials, staffList, onRestore, onSave, onDownloadJSON, onImportBackup }) {
   const [input, setInput] = useState("");
   const [restoring, setRestoring] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef(null);
 
   function add() {
     const v = input.trim(); if(!v) return;
@@ -2399,6 +2401,31 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
     setSaving(true);
     await onSave();
     setSaving(false);
+  }
+
+  function handleUploadClick() { fileInputRef.current?.click(); }
+
+  function handleFileChange(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    if (!window.confirm(`Restore from "${file.name}"? This will replace everything currently in the app.`)) return;
+    setImporting(true);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = JSON.parse(String(evt.target.result));
+        const ok = onImportBackup && onImportBackup(data);
+        if (ok === false) alert("That file doesn't look like a valid BIM backup.");
+        else alert("✅ Backup restored. It'll sync to the backup sheet in a moment.");
+      } catch (err) {
+        alert("Couldn't read that file — make sure it's a BIM JSON backup (.json).");
+      } finally {
+        setImporting(false);
+      }
+    };
+    reader.onerror = () => { setImporting(false); alert("Couldn't read that file."); };
+    reader.readAsText(file);
   }
 
   return (
@@ -2428,6 +2455,26 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
           )}
         </div>
         <div style={{fontSize:11,color:C.muted,marginTop:8}}>File: BIM-Backup-[date].xlsx • 4 tabs: Bookings, Income, Expenses, Summary</div>
+
+        {(onDownloadJSON||onImportBackup)&&(
+          <div style={{marginTop:16,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>🗂️ JSON Backup (Sheets-independent)</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:12}}>A raw data snapshot you keep yourself — doesn't depend on the Google Sheet at all. Download one regularly, and if the sheet ever gets out of sync, upload it back in to restore everything exactly as it was.</div>
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              {onDownloadJSON&&(
+                <Btn variant="outline" onClick={onDownloadJSON}>⬇ Download JSON Backup</Btn>
+              )}
+              {onImportBackup&&(
+                <>
+                  <Btn variant="amber" onClick={handleUploadClick} style={{opacity:importing?0.6:1}}>
+                    {importing ? "⟳ Restoring…" : "⬆ Upload Backup (.json)"}
+                  </Btn>
+                  <input ref={fileInputRef} type="file" accept=".json,application/json" onChange={handleFileChange} style={{display:"none"}} />
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card style={{marginBottom:20}}>
@@ -2529,6 +2576,31 @@ export default function App() {
     if (s.monthlyQuota !== undefined) setMonthlyQuota(+s.monthlyQuota || 50000);
     if (s.passwords !== undefined) setPasswords(s.passwords);
   }
+
+  // Full JSON backup — a Sheets-independent safety net. Download captures
+  // everything currently in the app; uploading it back replaces app state
+  // wholesale (and then syncs to the backup sheet like any other change).
+  function downloadJSONBackup() {
+    const payload = { bookings, financials, staffList, services, packageRates, settings, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `BIM-Backup-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function applyBackupData(data) {
+    if (!data || typeof data !== "object") return false;
+    if (Array.isArray(data.bookings))     setBookings(data.bookings);
+    if (Array.isArray(data.financials))   setFinancials(data.financials);
+    if (Array.isArray(data.staffList))    setStaffList(data.staffList);
+    if (Array.isArray(data.services))     setServices(data.services);
+    if (Array.isArray(data.packageRates)) setPackageRates(data.packageRates);
+    if (data.settings && typeof data.settings === "object") setSettings(data.settings);
+    return true;
+  }
+
   const { restore, manualRefresh, isLoading, manualSave } = useGoogleSync(
     bookings, financials, staffList, services, packageRates, settings,
     setBookings, setFinancials, setStaffList, setServices, setPackageRates, setSettings
@@ -2572,7 +2644,7 @@ export default function App() {
         {page==="packages"   && <Packages    isMobile={isMobile} packageRates={packageRates} setPackageRates={setPackageRates} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
-        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} onSave={manualSave} />}
+        {page==="settings"   && <Settings    services={services} setServices={setServices} passwords={passwords} setPasswords={setPasswords} bookings={bookings} financials={financials} staffList={staffList} onRestore={restore} onSave={manualSave} onDownloadJSON={downloadJSONBackup} onImportBackup={applyBackupData} />}
       </main>
       {isMobile&&<BottomNav page={page} setPage={setPagePersist} theme={theme} setTheme={setTheme} onRefresh={manualRefresh} />}
     </div>
