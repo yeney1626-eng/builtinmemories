@@ -51,7 +51,7 @@ function useGoogleSync(bookings, financials, staffList, services, packageRates, 
         return;
       }
       gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, packageRates: d.packageRates, settings: d.settings }).catch(() => {});
-    }, 2000);
+    }, 600);
   }
 
   // Load on mount
@@ -104,13 +104,15 @@ function useGoogleSync(bookings, financials, staffList, services, packageRates, 
 
   async function manualRefresh() { return restore(); }
 
-  async function manualSave() {
+  async function manualSave(silent) {
     const d = latest.current;
     console.log("[BIM Sync] Manual save triggered. Bookings:", d.bookings.length, "Financials:", d.financials.length);
     const result = await gsFetch("save", { bookings: d.bookings, financials: d.financials, staffList: d.staffList, services: d.services, packageRates: d.packageRates, settings: d.settings }).catch(err => { console.error("[BIM Sync] Manual save failed:", err); return { ok:false }; });
     console.log("[BIM Sync] Manual save result:", result);
+    if (silent) return result.ok;
     if (result.ok) alert("✅ Saved to Google Sheets successfully.");
     else alert("❌ Save failed. Check console for details.");
+    return result.ok;
   }
 
   return { restore, manualRefresh, isLoading, manualSave };
@@ -502,7 +504,12 @@ function BottomNav({ page, setPage, theme, setTheme, onRefresh }) {
 }
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setMonthlyQuota, packageRates }) {
+function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setMonthlyQuota, packageRates, onRefresh }) {
+  const [refreshing, setRefreshing] = useState(false);
+  async function handleRefresh() {
+    setRefreshing(true);
+    try { await onRefresh?.(); } finally { setRefreshing(false); }
+  }
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonthIdx = now.getMonth();
@@ -730,10 +737,15 @@ function Dashboard({ bookings, financials, setPage, isMobile, monthlyQuota, setM
       {/* ── Monthly section with dropdown ─────────────────────────────── */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:12}}>
         <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em"}}>Monthly Summary</div>
-        <select value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)}
-          style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 10px",fontSize:13,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}}>
-          {monthOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <Btn variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing} title="Pull the latest data from the backup Google Sheet">
+            {refreshing ? "🔄 Refreshing…" : "🔄 Refresh Data"}
+          </Btn>
+          <select value={selectedMonth} onChange={e=>setSelectedMonth(e.target.value)}
+            style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 10px",fontSize:13,fontFamily:"inherit",color:C.text,background:C.surface,outline:"none"}}>
+            {monthOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:isMobile?10:14,marginBottom:16}}>
@@ -1233,7 +1245,7 @@ function BookingForm({ form, setForm, staffList, services, packageRates, onSave,
   );
 }
 
-function Bookings({ bookings, setBookings, staffList, services, packageRates, financials, setFinancials, isMobile, bookingsPwd }) {
+function Bookings({ bookings, setBookings, staffList, services, packageRates, financials, setFinancials, isMobile, bookingsPwd, onManualSave }) {
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState("datetime");
@@ -1242,6 +1254,13 @@ function Bookings({ bookings, setBookings, staffList, services, packageRates, fi
   const [form,  setForm]    = useState(emptyBooking());
   const [selectedIds, setSelectedIds] = useState(new Set());
   const bookingGate = usePasswordGate(bookingsPwd);
+
+  // Give React a tick to commit the state update (so the sync hook's "latest"
+  // ref picks up the new bookings/financials) before pushing an immediate,
+  // silent save to the backup sheet — instead of waiting on the debounce.
+  // This closes the window where a quick page refresh could still read the
+  // old (pre-save) data back from the sheet.
+  function flushSave() { setTimeout(() => { onManualSave?.(true); }, 150); }
 
   function toggleSort(key, defaultDir) {
     if (sortKey === key) setSortDir(d => d==="asc" ? "desc" : "asc");
@@ -1318,6 +1337,7 @@ function Bookings({ bookings, setBookings, staffList, services, packageRates, fi
 
     setBookings(prev=>isNew?[newBooking,...prev]:prev.map(b=>b.id===modal?newBooking:b));
     setModal(null);
+    flushSave();
   }
 
   function doDelete(id) {
@@ -1510,7 +1530,7 @@ function Bookings({ bookings, setBookings, staffList, services, packageRates, fi
                       <div style={{fontSize:10,color:C.muted,fontFamily:"monospace",marginTop:1}}>{b.id}</div>
                     </div>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{ const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); }); }}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{ const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); flushSave(); }); }}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1588,7 +1608,7 @@ function Bookings({ bookings, setBookings, staffList, services, packageRates, fi
                   <td style={{padding:"12px 16px",fontVariantNumeric:"tabular-nums",fontWeight:700,color:bal>0?C.amber:C.green}}>{bal>0?currency(bal):"✓ Paid"}</td>
                   <td style={{padding:"12px 16px"}}>
                     <select value={b.status}
-                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{ const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); }); }}
+                      onChange={e=>{ const v=e.target.value; bookingGate.request(()=>{ const updatedB={...b,status:v}; setBookings(prev=>prev.map(x=>x.id===b.id?updatedB:x)); setFinancials(prev=>syncIncomeForBookings([updatedB],prev,staffList)); flushSave(); }); }}
                       style={{border:`1.5px solid ${STATUS_COLOR[b.status]||C.border}`,borderRadius:20,padding:"4px 10px",fontSize:12,fontWeight:700,color:STATUS_COLOR[b.status]||C.text,background:STATUS_COLOR[b.status]+"18"||C.bg,cursor:"pointer",outline:"none",fontFamily:"inherit"}}>
                       {["Reserved","Inquiry","Completed","Cancelled"].map(s=><option key={s} value={s}>{s}</option>)}
                     </select>
@@ -2547,8 +2567,8 @@ export default function App() {
         </div>
       )}
       <main style={{flex:1,padding:isMobile?"62px 12px 80px":"36px 40px",overflowX:"hidden",overflowY:"auto",width:isMobile?"100%":undefined,minWidth:0}}>
-        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} packageRates={packageRates} />}
-        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} packageRates={packageRates} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} />}
+        {page==="dashboard"  && <Dashboard   bookings={bookings} financials={financials} setPage={setPagePersist} isMobile={isMobile} monthlyQuota={monthlyQuota} setMonthlyQuota={setMonthlyQuota} packageRates={packageRates} onRefresh={manualRefresh} />}
+        {page==="bookings"   && <Bookings    bookings={bookings} setBookings={setBookings} staffList={staffList} services={services} packageRates={packageRates} financials={financials} setFinancials={setFinancials} isMobile={isMobile} bookingsPwd={passwords.bookings} onManualSave={manualSave} />}
         {page==="packages"   && <Packages    isMobile={isMobile} packageRates={packageRates} setPackageRates={setPackageRates} />}
         {page==="staff"      && <Staff       staffList={staffList} setStaffList={setStaffList} isMobile={isMobile} />}
         {page==="financials" && <Financials  financials={financials} setFinancials={setFinancials} bookings={bookings} isMobile={isMobile} financialsPwd={passwords.financials} />}
