@@ -1737,12 +1737,21 @@ function exportToExcel(sheets, filename) {
 }
 
 // Full backup export — matches BIM_Backup.xlsx format exactly
-// Reads the exact .xlsx produced by exportFullBackup() below and reconstructs
-// bookings/financials from it. Best-effort: this human-readable export never
-// included add-ons, staff ID links, or cancellation detail, so those can't be
-// recovered this way — use the JSON backup (Settings) for a lossless restore.
+// Reads a BIM backup .xlsx — either the app's own "Download Full Backup"
+// export, OR the actual Google Sheet exported to Excel (which is what most
+// people upload here, complete with a "BIM_Data" blob tab).
+//
+// IMPORTANT: bookings & financials are always reconstructed from the
+// Bookings/Income/Expenses TABS, never from the "BIM_Data" JSON blob — that
+// blob lives in a single spreadsheet cell, and Google Sheets/Excel silently
+// truncate any cell value past 32,767 characters. Once a business has enough
+// bookings/income/expense history, that blob quietly becomes corrupted
+// (invalid, cut-off JSON) while the tabs themselves are completely unaffected
+// (each cell holds one small value). The blob is only used, best-effort, for
+// the smaller staffList/services/packageRates/settings — and only if the
+// sheet's Apps Script has been updated to also store those there.
 function parseXlsxBackup(arrayBuffer, staffList) {
-  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
   const bSheet = wb.Sheets["📅 Bookings"];
   const iSheet = wb.Sheets["💰 Income"];
   const eSheet = wb.Sheets["💸 Expenses"];
@@ -1752,70 +1761,133 @@ function parseXlsxBackup(arrayBuffer, staffList) {
   const iRows = iSheet ? XLSX.utils.sheet_to_json(iSheet, { defval: "" }) : [];
   const eRows = eSheet ? XLSX.utils.sheet_to_json(eSheet, { defval: "" }) : [];
 
+  function asDate(val) {
+    if (!val) return null;
+    if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  function isoDateOnly(val) {
+    const d = asDate(val);
+    if (!d) return typeof val === "string" ? val : "";
+    const pad = n => String(n).padStart(2,"0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  }
+  // "Event Date" and "Event Time" may be real Date cells (from the Sheet) or
+  // locale strings (from the app's own xlsx export) — handle both.
+  function combineDateTime(dateVal, timeVal) {
+    const d = asDate(dateVal);
+    if (!d) return "";
+    let hh = 12, mm = 0;
+    const t = asDate(timeVal);
+    if (t) { hh = t.getHours(); mm = t.getMinutes(); }
+    else if (typeof timeVal === "string" && timeVal.trim()) {
+      const m = timeVal.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+      if (m) {
+        let h = parseInt(m[1], 10);
+        const ampm = (m[3]||"").toUpperCase();
+        if (ampm === "PM" && h < 12) h += 12;
+        if (ampm === "AM" && h === 12) h = 0;
+        hh = h; mm = +m[2];
+      }
+    }
+    const pad = n => String(n).padStart(2,"0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(hh)}:${pad(mm)}`;
+  }
+
   const bookings = bRows.map(r => {
     const price   = Number(r["Package Price (₱)"]) || 0;
     const balance = Number(r["Balance (₱)"]) || 0;
     const status  = r["Booking Status"] || "Reserved";
     const paid    = price - balance;
-    const reservationFee = (status !== "Completed" && paid > 0 && balance > 0) ? paid : 0;
+    const exportedResFee = Number(r["Reservation Fee (₱)"]) || 0;
+    const reservationFee = exportedResFee > 0 ? exportedResFee
+      : (status !== "Completed" && paid > 0 && balance > 0) ? paid
+      : 0;
 
-    // "Event Date"/"Event Time" were written as locale strings (e.g. "July 8,
-    // 2026" / "02:30 PM") — reconstruct an ISO-ish datetime from them.
-    let datetime = "";
-    const dateStr = r["Event Date"], timeStr = r["Event Time"];
-    if (dateStr) {
-      const d = new Date(`${dateStr} ${timeStr||""}`.trim());
-      if (!isNaN(d.getTime())) {
-        const pad = n => String(n).padStart(2,"0");
-        datetime = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      }
-    }
+    const datetime = combineDateTime(r["Event Date"], r["Event Time"]);
 
-    // Staff was exported as a display name, not an ID — best-effort match
-    // back against the current staff list.
-    const staffName = r["Staff"];
-    const matchedStaff = staffName && staffName !== "—" ? (staffList||[]).find(s=>s.name===staffName) : null;
+    // Staff may be stored as an ID (from the Sheet) or a display name (from
+    // the app's own xlsx export) — try to match either way against the
+    // current staff list, but keep the raw value even if no match is found.
+    const staffRaw = r["Staff"] !== undefined && r["Staff"] !== "" ? String(r["Staff"]).trim() : "";
+    const matched = staffRaw && staffRaw !== "—"
+      ? (staffList||[]).find(s => s.id === staffRaw || s.name === staffRaw)
+      : null;
+    const staffId = matched ? matched.id : staffRaw;
 
     const serviceStr = String(r["Package / Service"]||"");
     return {
-      id: r["Booking ID"] ? String(r["Booking ID"]) : uid(),
-      client: r["Client Name"] || "",
-      phone: r["Phone"] || "",
-      service: serviceStr,
-      services: serviceStr.split("+").map(s=>s.trim()).filter(Boolean),
-      eventType: r["Event Type"] || "",
-      venue: r["Venue"] || "",
+      id:             r["Booking ID"] ? String(r["Booking ID"]) : uid(),
+      client:         r["Client Name"] ? String(r["Client Name"]) : "",
+      phone:          (r["Phone"] !== undefined && r["Phone"] !== "") ? String(r["Phone"]) : "",
+      service:        serviceStr,
+      services:       serviceStr.split("+").map(s=>s.trim()).filter(Boolean),
+      eventType:      r["Event Type"] ? String(r["Event Type"]) : "",
+      venue:          r["Venue"] ? String(r["Venue"]) : "",
       datetime,
-      pax: (r["No. of Pax"] !== undefined && r["No. of Pax"] !== "") ? String(r["No. of Pax"]) : "",
-      theme: r["Theme"] || "",
-      staff: matchedStaff ? matchedStaff.id : "",
-      staffIds: matchedStaff ? [matchedStaff.id] : [],
+      pax:            (r["No. of Pax"] !== undefined && r["No. of Pax"] !== "") ? String(r["No. of Pax"]) : "",
+      theme:          r["Theme"] ? String(r["Theme"]) : "",
+      staff:          staffId,
+      staffIds:       staffId ? [staffId] : [],
       price, balance,
       reservationFee,
-      paymentStatus: r["Payment Status"] || "",
+      paymentStatus:  r["Payment Status"] ? String(r["Payment Status"]) : "",
       status,
-      notes: r["Notes"] || "",
-      addons: [],
-      cancelType: "",
-      refundAmount: "",
+      notes:          r["Notes"] ? String(r["Notes"]) : "",
+      addons:         [],
+      cancelType:     "",
+      refundAmount:   "",
     };
   });
 
   function mapFin(rows, type) {
     return rows.map(r => ({
-      id: uid(),
+      id:          r["ID"] ? String(r["ID"]) : uid(),
       type,
-      date: r["Date"] || "",
-      category: r["Category"] || "",
-      description: r["Description"] || "",
-      amount: Number(r["Amount (₱)"]) || 0,
-      method: r["Method"] || "",
-      bookingId: r["Linked Booking"] || "",
+      date:        isoDateOnly(r["Date"]),
+      category:    r["Category"] ? String(r["Category"]) : "",
+      description: r["Description"] ? String(r["Description"]) : "",
+      amount:      Number(r["Amount (₱)"]) || 0,
+      method:      r["Method"] ? String(r["Method"]) : "",
+      bookingId:   r["Linked Booking"] ? String(r["Linked Booking"]) : "",
+      itemKind:    r["Item Kind"] ? String(r["Item Kind"]) : "",
     }));
   }
 
   const financials = [...mapFin(iRows, "Income"), ...mapFin(eRows, "Expense")];
-  return { bookings, financials, _meta: { bookingsFound: bRows.length, incomeFound: iRows.length, expensesFound: eRows.length } };
+
+  // Best-effort only: try to recover staffList/services/packageRates/settings
+  // from the BIM_Data blob tab, if present. If it's missing OR corrupted
+  // (truncated past the 32,767-char single-cell limit — very possible once a
+  // business has enough history), this just quietly yields nothing extra;
+  // bookings/financials above are completely unaffected either way since
+  // they came from the tabs, not this blob.
+  let extra = {};
+  let blobOk = false, blobTruncated = false;
+  const blobSheet = wb.Sheets["BIM_Data"];
+  if (blobSheet && blobSheet["A1"] && blobSheet["A1"].v) {
+    const raw = String(blobSheet["A1"].v);
+    if (raw.length >= 32767) blobTruncated = true;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed.staffList))    extra.staffList = parsed.staffList;
+        if (Array.isArray(parsed.services))     extra.services = parsed.services;
+        if (Array.isArray(parsed.packageRates)) extra.packageRates = parsed.packageRates;
+        if (parsed.settings && typeof parsed.settings === "object") extra.settings = parsed.settings;
+        blobOk = true;
+      }
+    } catch(_) { /* corrupted/truncated blob — ignore, tabs already have the important data */ }
+  }
+
+  return {
+    bookings, financials, ...extra,
+    _meta: {
+      bookingsFound: bRows.length, incomeFound: iRows.length, expensesFound: eRows.length,
+      blobOk, blobTruncated,
+    },
+  };
 }
 
 function exportFullBackup(bookings, financials, staffList) {
@@ -2505,7 +2577,13 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
           return;
         }
         onImportBackup && onImportBackup(data);
-        alert(`✅ Restored ${data.bookings.length} bookings and ${data.financials.length} financial entries from the Excel backup. It'll sync to the backup sheet in a moment.`);
+        const m = data._meta || {};
+        let msg = `✅ Restored ${data.bookings.length} bookings and ${data.financials.length} financial entries from the Excel backup.`;
+        if (m.blobTruncated) {
+          msg += `\n\n⚠️ Heads up: this file's hidden data cell was cut off (a known Google Sheets limit once history gets long), so staff list/services/package rates weren't recoverable from it — your bookings and money amounts above are unaffected, since those come from the visible tabs, not that cell.`;
+        }
+        msg += `\n\nIt'll sync to the backup sheet in a moment.`;
+        alert(msg);
       } catch (err) {
         alert("Couldn't read that file — make sure it's a BIM Excel backup (.xlsx).");
       } finally {
