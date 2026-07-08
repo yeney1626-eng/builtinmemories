@@ -1737,6 +1737,87 @@ function exportToExcel(sheets, filename) {
 }
 
 // Full backup export — matches BIM_Backup.xlsx format exactly
+// Reads the exact .xlsx produced by exportFullBackup() below and reconstructs
+// bookings/financials from it. Best-effort: this human-readable export never
+// included add-ons, staff ID links, or cancellation detail, so those can't be
+// recovered this way — use the JSON backup (Settings) for a lossless restore.
+function parseXlsxBackup(arrayBuffer, staffList) {
+  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const bSheet = wb.Sheets["📅 Bookings"];
+  const iSheet = wb.Sheets["💰 Income"];
+  const eSheet = wb.Sheets["💸 Expenses"];
+  if (!bSheet && !iSheet && !eSheet) return null;
+
+  const bRows = bSheet ? XLSX.utils.sheet_to_json(bSheet, { defval: "" }) : [];
+  const iRows = iSheet ? XLSX.utils.sheet_to_json(iSheet, { defval: "" }) : [];
+  const eRows = eSheet ? XLSX.utils.sheet_to_json(eSheet, { defval: "" }) : [];
+
+  const bookings = bRows.map(r => {
+    const price   = Number(r["Package Price (₱)"]) || 0;
+    const balance = Number(r["Balance (₱)"]) || 0;
+    const status  = r["Booking Status"] || "Reserved";
+    const paid    = price - balance;
+    const reservationFee = (status !== "Completed" && paid > 0 && balance > 0) ? paid : 0;
+
+    // "Event Date"/"Event Time" were written as locale strings (e.g. "July 8,
+    // 2026" / "02:30 PM") — reconstruct an ISO-ish datetime from them.
+    let datetime = "";
+    const dateStr = r["Event Date"], timeStr = r["Event Time"];
+    if (dateStr) {
+      const d = new Date(`${dateStr} ${timeStr||""}`.trim());
+      if (!isNaN(d.getTime())) {
+        const pad = n => String(n).padStart(2,"0");
+        datetime = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+    }
+
+    // Staff was exported as a display name, not an ID — best-effort match
+    // back against the current staff list.
+    const staffName = r["Staff"];
+    const matchedStaff = staffName && staffName !== "—" ? (staffList||[]).find(s=>s.name===staffName) : null;
+
+    const serviceStr = String(r["Package / Service"]||"");
+    return {
+      id: r["Booking ID"] ? String(r["Booking ID"]) : uid(),
+      client: r["Client Name"] || "",
+      phone: r["Phone"] || "",
+      service: serviceStr,
+      services: serviceStr.split("+").map(s=>s.trim()).filter(Boolean),
+      eventType: r["Event Type"] || "",
+      venue: r["Venue"] || "",
+      datetime,
+      pax: (r["No. of Pax"] !== undefined && r["No. of Pax"] !== "") ? String(r["No. of Pax"]) : "",
+      theme: r["Theme"] || "",
+      staff: matchedStaff ? matchedStaff.id : "",
+      staffIds: matchedStaff ? [matchedStaff.id] : [],
+      price, balance,
+      reservationFee,
+      paymentStatus: r["Payment Status"] || "",
+      status,
+      notes: r["Notes"] || "",
+      addons: [],
+      cancelType: "",
+      refundAmount: "",
+    };
+  });
+
+  function mapFin(rows, type) {
+    return rows.map(r => ({
+      id: uid(),
+      type,
+      date: r["Date"] || "",
+      category: r["Category"] || "",
+      description: r["Description"] || "",
+      amount: Number(r["Amount (₱)"]) || 0,
+      method: r["Method"] || "",
+      bookingId: r["Linked Booking"] || "",
+    }));
+  }
+
+  const financials = [...mapFin(iRows, "Income"), ...mapFin(eRows, "Expense")];
+  return { bookings, financials, _meta: { bookingsFound: bRows.length, incomeFound: iRows.length, expensesFound: eRows.length } };
+}
+
 function exportFullBackup(bookings, financials, staffList) {
   const wb = XLSX.utils.book_new();
   const date = new Date().toISOString().slice(0,10);
@@ -2381,7 +2462,9 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
   const [restoring, setRestoring] = useState(false);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importingXlsx, setImportingXlsx] = useState(false);
   const fileInputRef = useRef(null);
+  const xlsxInputRef = useRef(null);
 
   function add() {
     const v = input.trim(); if(!v) return;
@@ -2404,6 +2487,34 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
   }
 
   function handleUploadClick() { fileInputRef.current?.click(); }
+
+  function handleXlsxUploadClick() { xlsxInputRef.current?.click(); }
+
+  function handleXlsxFileChange(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!window.confirm(`Restore bookings & financials from "${file.name}"? This replaces your current bookings and financial entries.\n\nNote: add-ons, staff ID links, and cancellation details aren't stored in the Excel backup, so those won't carry over — use the JSON backup below for a full, lossless restore.`)) return;
+    setImportingXlsx(true);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = parseXlsxBackup(evt.target.result, staffList);
+        if (!data) {
+          alert("Couldn't find the Bookings/Income/Expenses sheets in that file — make sure it's a BIM Excel backup (.xlsx).");
+          return;
+        }
+        onImportBackup && onImportBackup(data);
+        alert(`✅ Restored ${data.bookings.length} bookings and ${data.financials.length} financial entries from the Excel backup. It'll sync to the backup sheet in a moment.`);
+      } catch (err) {
+        alert("Couldn't read that file — make sure it's a BIM Excel backup (.xlsx).");
+      } finally {
+        setImportingXlsx(false);
+      }
+    };
+    reader.onerror = () => { setImportingXlsx(false); alert("Couldn't read that file."); };
+    reader.readAsArrayBuffer(file);
+  }
 
   function handleFileChange(e) {
     const file = e.target.files && e.target.files[0];
@@ -2443,6 +2554,14 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
           <Btn variant="success" onClick={()=>exportFullBackup(bookings,financials,staffList)}>
             ⬇ Download Full Backup (.xlsx)
           </Btn>
+          {onImportBackup&&(
+            <>
+              <Btn variant="amber" onClick={handleXlsxUploadClick} style={{opacity:importingXlsx?0.6:1}}>
+                {importingXlsx ? "⟳ Restoring…" : "⬆ Upload Backup (.xlsx)"}
+              </Btn>
+              <input ref={xlsxInputRef} type="file" accept=".xlsx,.xls" onChange={handleXlsxFileChange} style={{display:"none"}} />
+            </>
+          )}
           {onSave&&(
             <Btn variant="primary" onClick={handleSave} style={{opacity:saving?0.6:1}}>
               {saving ? "⟳ Saving…" : "☁️ Save to Sheet Now"}
@@ -2454,7 +2573,7 @@ function Settings({ services, setServices, passwords, setPasswords, bookings, fi
             </Btn>
           )}
         </div>
-        <div style={{fontSize:11,color:C.muted,marginTop:8}}>File: BIM-Backup-[date].xlsx • 4 tabs: Bookings, Income, Expenses, Summary</div>
+        <div style={{fontSize:11,color:C.muted,marginTop:8}}>File: BIM-Backup-[date].xlsx • 4 tabs: Bookings, Income, Expenses, Summary. Uploading restores bookings &amp; financials only — add-ons and cancellation detail aren't in this format (use the JSON backup below for those).</div>
 
         {(onDownloadJSON||onImportBackup)&&(
           <div style={{marginTop:16,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
